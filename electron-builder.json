@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "io.github.maosixian.noveltype",
+  "productName": "NovelType",
+  "asar": true,
+  "npmRebuild": false,
+  "directories": { "output": "dist" },
+  "files": [
+    "app/main.cjs", "app/preload.cjs", "app/library.cjs", "app/security.cjs",
+    "app/translation.cjs", "app/typing.mjs", "app/stream.mjs", "app/renderer.js",
+    "app/index.html", "app/styles.css", "package.json", "使用说明.md"
+  ],
+  "artifactName": "NovelType-${version}-win-${arch}.${ext}",
+  "publish": null,
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "zip", "arch": ["x64"] }],
+    "requestedExecutionLevel": "asInvoker"
+  },
+  "nsis": {
+    "artifactName": "NovelType-Setup-${version}-${arch}.${ext}",
+    "oneClick": true,
+    "perMachine": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": false,
+    "deleteAppDataOnUninstall": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "逐页英文打字",
+    "runAfterFinish": false,
+    "installerLanguages": ["zh_CN", "en_US"]
+  }
+}

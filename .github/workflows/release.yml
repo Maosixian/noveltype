@@ -1,0 +1,79 @@
+name: Test and release Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:desktop
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: node scripts/check-version.cjs $env:GITHUB_REF_NAME
+      - run: npm ci
+      - run: npm run dist
+      - run: npm run verify:release
+      - name: Verify packaged app in an isolated profile
+        env:
+          NOVELTYPE_PACKAGED_EXE: dist/win-unpacked/NovelType.exe
+        run: node test/packaged-smoke.cjs
+      - name: Install and verify on the disposable Windows runner
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $installDir = Join-Path $env:RUNNER_TEMP 'noveltype-install-test'
+          if (Test-Path -LiteralPath $installDir) { throw 'Installer test requires a fresh destination' }
+          $setup = (Resolve-Path -LiteralPath "dist/NovelType-Setup-$version-x64.exe").Path
+          # NSIS requires /D last and unquoted; its value may contain spaces.
+          $installed = Start-Process -FilePath $setup -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru -WindowStyle Hidden
+          if ($installed.ExitCode -ne 0) { throw "Installer failed: $($installed.ExitCode)" }
+          $env:NOVELTYPE_PACKAGED_EXE = Join-Path $installDir 'NovelType.exe'
+          if (-not (Test-Path -LiteralPath $env:NOVELTYPE_PACKAGED_EXE)) { throw 'Installed executable is missing' }
+          node test/packaged-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed app smoke test failed' }
+      - name: Publish install and ZIP packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $notes = @"
+          Windows x64 release of NovelType · 逐页.
+
+          - Installer: NovelType-Setup-$version-x64.exe
+          - ZIP: extract the entire archive, then run NovelType.exe.
+          - Your books, progress and API Key stay on your own computer. Each user supplies their own API Key.
+          - This build is unsigned. Windows or an organization's policy may prevent launch. Do not disable security controls to run it.
+          - Updating preserves the data directory. Download updates from this repository's Releases page.
+          "@
+          $notes | Set-Content -Encoding utf8 release-notes.txt
+          gh release create $env:GITHUB_REF_NAME "dist/NovelType-Setup-$version-x64.exe" "dist/NovelType-$version-win-x64.zip" "dist/SHA256SUMS.txt" --verify-tag --title "NovelType $env:GITHUB_REF_NAME" --notes-file release-notes.txt

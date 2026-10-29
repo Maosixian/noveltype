@@ -1,0 +1,92 @@
+const {_electron}=require('playwright'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {Library}=require('../app/library.cjs');
+const root=path.resolve(__dirname,'..'),data=fs.mkdtempSync(path.join(os.tmpdir(),'noveltype-scroll-')),evidence=path.join(root,'evidence');
+fs.mkdirSync(evidence,{recursive:true});
+const lib=new Library(data),demoId=lib.getState().activeBookId;
+const id=lib.importText({title:'连续阅读测试',text:Array.from({length:45},(_,i)=>`第${i+1}章\n山间小路伸向远方。\n`).join('')}).activeBookId;
+for(let i=0;i<45;i++)lib.setTranslation({bookId:id,index:i,translation:`Line ${i+1}.`});
+const env={...process.env,NOVELTYPE_TEST_DATA:data};delete env.ELECTRON_RUN_AS_NODE;
+let app,page;const checks=[],errors=[];
+async function launch(){app=await _electron.launch({args:[root],env});page=await app.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.locator('#book-title').waitFor({state:'visible'});}
+async function check(name,fn){await fn();checks.push({name,passed:true});console.log('PASS '+name);}
+async function reload(){await page.reload();await page.locator('.story-passage.is-active').waitFor({state:'visible'});}
+const active=()=>page.locator('.story-passage.is-active');
+const requests=()=>app.evaluate(()=>globalThis.testRequests||0);
+async function mock(fail=false,delay=30){await app.evaluate(({net},{fail,delay})=>{globalThis.testRequests=0;net.fetch=async()=>{globalThis.testRequests++;await new Promise(r=>setTimeout(r,delay));return fail?new Response('{}',{status:429}):new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'A quiet road leads into the hills.'}}]}),{status:200});};},{fail,delay});}
+(async()=>{try{
+await launch();
+await check('continuous feed, adjacent paragraphs, no page buttons',async()=>{await page.locator('#story-stream').waitFor({state:'visible',timeout:4000});assert.ok(await page.locator('.story-passage').count()>1);assert.equal(await page.locator('#next,#previous,#completion-next').count(),0);assert.equal(await page.evaluate(()=>typeof require),'undefined');});
+await check('continuous keystrokes cross two boundaries with focus intact',async()=>{const input=page.locator('#typing-input');await input.click();await input.pressSequentially('X',{delay:20});assert.equal(await page.locator('#accuracy').innerText(),'0');await input.press('Backspace');await input.pressSequentially('Line 1.Line 2.Li',{delay:15});assert.equal(await active().getAttribute('data-index'),'2');assert.equal(await input.inputValue(),'Li');assert.equal(await page.evaluate(()=>document.activeElement.id),'typing-input');});
+await check('downward scrolling loads more without moving practice position',async()=>{await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));await page.waitForTimeout(500);assert.ok(await page.locator('.story-passage').count()>12);assert.equal(await active().getAttribute('data-index'),'2');await page.locator('#return-to-input').click();});
+await check('close and restart retain old completions and current draft',async()=>{const closed=app.waitForEvent('close');await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());await closed;await launch();assert.equal(await active().getAttribute('data-index'),'2');assert.equal(await page.locator('#typing-input').inputValue(),'Li');const state=await page.evaluate(()=>window.novel.getState());assert.deepEqual(state.books.find(b=>b.id===state.activeBookId).completed,[0,1]);});
+await check('opposite letter case stays correct and preserves text across automatic advances',async()=>{
+  await page.locator('.story-passage[data-index="3"] .practice-here').click();
+  const input=page.locator('#typing-input'),source=await page.locator('#source-text').textContent();
+  await input.pressSequentially('lINE',{delay:20});
+  assert.equal(await input.inputValue(),'lINE');
+  assert.equal(await active().locator('.target-char.wrong').count(),0);
+  assert.equal(await active().locator('.target-char.correct').count(),4);
+  assert.equal(await page.locator('#accuracy').innerText(),'100');
+  assert.equal(await page.locator('#translation-text').innerText(),'Line 4.');
+  assert.equal(await page.locator('#source-text').textContent(),source);
+  await input.pressSequentially(' 4.lINE 5.l',{delay:20});
+  assert.equal(await active().getAttribute('data-index'),'5');
+  assert.equal(await input.inputValue(),'l');
+  assert.equal(await active().locator('.target-char.wrong').count(),0);
+  assert.equal(await page.locator('#accuracy').innerText(),'100');
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'typing-input');
+  await page.waitForFunction(()=>document.querySelector('#save-state').textContent.startsWith('✓'));
+  const book=(await page.evaluate(()=>window.novel.getState())).books.find(b=>b.id===id);
+  assert.ok(book.completed.includes(3)&&book.completed.includes(4));
+  assert.equal(book.draft,'l');
+  assert.equal(book.segments[3].translation,'Line 4.');
+  assert.equal(book.segments[3].source,source);
+});
+await check('case tolerance still rejects missing spaces and different punctuation',async()=>{
+  const input=page.locator('#typing-input');
+  await page.locator('#reset').click();
+  await input.pressSequentially('lINE6.',{delay:20});
+  assert.equal(await active().getAttribute('data-index'),'5');
+  assert.ok(await active().locator('.target-char.wrong').count()>0);
+  assert.ok(Number(await page.locator('#accuracy').innerText())<100);
+  await page.locator('#reset').click();
+  await input.pressSequentially('lINE 6!',{delay:20});
+  assert.equal(await active().getAttribute('data-index'),'5');
+  assert.equal(await active().locator('.target-char.wrong').count(),1);
+  assert.ok(Number(await page.locator('#accuracy').innerText())<100);
+  assert.equal(await input.inputValue(),'lINE 6!');
+  await input.press('Backspace');await input.pressSequentially('.',{delay:20});
+  assert.equal(await active().getAttribute('data-index'),'6');
+});
+await check('restart resumes a saved complete draft with different letter case exactly once',async()=>{
+  let closed=app.waitForEvent('close');await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());await closed;
+  const fixture=new Library(data),before=fixture.getState().books.find(b=>b.id===id);
+  fixture.saveProgress({bookId:id,position:6,draft:'lINE 7.'});
+  assert.equal(new Library(data).getState().books.find(b=>b.id===id).draft,'lINE 7.');
+  await launch();
+  await page.waitForFunction(()=>document.querySelector('.story-passage.is-active')?.dataset.index==='7');
+  assert.equal(await page.locator('#typing-input').inputValue(),'');
+  await page.waitForFunction(()=>document.querySelector('#save-state').textContent.startsWith('✓'));
+  let book=(await page.evaluate(()=>window.novel.getState())).books.find(b=>b.id===id);
+  assert.equal(book.completed.filter(index=>index===6).length,1);
+  assert.equal(book.stats.sessions,before.stats.sessions);
+  assert.equal(book.segments[6].translation,'Line 7.');
+  closed=app.waitForEvent('close');await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());await closed;await launch();
+  assert.equal(await active().getAttribute('data-index'),'7');
+  book=(await page.evaluate(()=>window.novel.getState())).books.find(b=>b.id===id);
+  assert.equal(book.completed.filter(index=>index===6).length,1);
+  assert.equal(book.stats.sessions,before.stats.sessions);
+});
+await check('resume in middle renders bounded rows then loads upward',async()=>{await page.evaluate(id=>window.novel.saveProgress({bookId:id,position:30,draft:''}),id);await reload();const first=Number(await page.locator('.story-passage').first().getAttribute('data-index'));assert.ok(first>0);assert.ok(await page.locator('.story-passage').count()<45);await page.evaluate(()=>window.scrollTo(0,0));await page.waitForTimeout(500);assert.ok(Number(await page.locator('.story-passage').first().getAttribute('data-index'))<first);assert.equal(await active().getAttribute('data-index'),'30');});
+await check('last paragraph stops once',async()=>{await page.evaluate(id=>window.novel.saveProgress({bookId:id,position:44,draft:''}),id);await reload();await page.locator('#typing-input').click();await page.locator('#typing-input').pressSequentially('Line 45.',{delay:20});await page.waitForTimeout(500);assert.equal(await active().getAttribute('data-index'),'44');const state=await page.evaluate(()=>window.novel.getState());assert.equal(state.books.find(b=>b.id===id).completed.filter(i=>i===44).length,1);});
+await check('paste import renders markup as text',async()=>{await page.locator('#open-paste').click();await page.locator('#paste-name').fill('新故事');await page.locator('#paste-text').fill('第1章\n小屋。<img src=x onerror=alert(1)>\n第2章\n河流。\n第3章\n山谷。\n第4章\n清晨。');await page.locator('#paste-submit').click();await page.locator('#paste-dialog').waitFor({state:'hidden'});assert.match(await page.locator('#source-text').innerText(),/<img/);assert.equal(await page.locator('#story-stream img').count(),0);});
+await check('scrolling alone never translates',async()=>{await mock();await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));await page.waitForTimeout(200);assert.equal(await requests(),0);});
+await check('API key is encrypted and excluded from state',async()=>{await page.locator('#open-settings').click();await page.locator('#api-key').fill('noveltype-test-placeholder');await page.locator('#save-settings').click();await page.waitForFunction(()=>document.querySelector('#api-key').value==='');const state=await page.evaluate(()=>window.novel.getState());assert.equal(state.settings.hasKey,true);assert.ok(!JSON.stringify(state).includes('test-placeholder'));assert.ok(!fs.readFileSync(path.join(data,'settings.json'),'utf8').includes('test-placeholder'));await page.locator('#settings-dialog .close-dialog').first().click();});
+await check('start translates only current plus one lookahead',async()=>{await page.locator('#translate').click();await page.waitForFunction(()=>!document.querySelector('#typing-input').disabled);await page.waitForTimeout(500);assert.equal(await requests(),2);await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));await page.waitForTimeout(200);assert.equal(await requests(),2);});
+await check('cached next paragraph is seamless and only one new prefetch starts',async()=>{await page.locator('#return-to-input').click();await page.locator('#typing-input').click();await page.locator('#typing-input').pressSequentially('A quiet road leads into the hills.A',{delay:15});assert.equal(await active().getAttribute('data-index'),'1');assert.equal(await page.locator('#typing-input').inputValue(),'A');await page.waitForTimeout(500);assert.equal(await requests(),3);await page.locator('#pause').click();const n=await requests();await page.waitForTimeout(300);assert.equal(await requests(),n);});
+await check('native Chinese TXT import and failed provider stop without retry',async()=>{const file=path.join(data,'gb.txt');fs.writeFileSync(file,Buffer.from([0xc4,0xe3,0xba,0xc3]));await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},file);await page.locator('#import-file').click();await page.waitForFunction(()=>document.querySelector('#source-text').textContent==='你好');await mock(true);await page.locator('#translate').click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('429'));await page.waitForTimeout(400);assert.equal(await requests(),1);});
+await check('switch book during a pending request resumes new translation context',async()=>{const first=await page.evaluate(()=>window.novel.importText({title:'切换前',text:'第1章\n旧故事。\n第2章\n旧故事下文。'}));const second=await page.evaluate(()=>window.novel.importText({title:'切换目标',text:'第1章\n新故事。\n第2章\n新故事下文。'}));await page.evaluate(id=>window.novel.selectBook(id),first.activeBookId);await reload();await mock(false,900);await page.locator('#translate').click();await page.locator('.book-button[title="切换目标"]').click();await page.locator('#translate').click();await page.waitForFunction(()=>document.querySelector('#translation-text')?.textContent.startsWith('A quiet road'),null,{timeout:5000});await page.waitForTimeout(1500);assert.equal(await requests(),3);const current=await page.evaluate(()=>window.novel.getState());assert.equal(current.activeBookId,second.activeBookId);await page.locator('#pause').click();});
+await check('compact layout no overflow and no renderer errors',async()=>{await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(960,760));await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.deepEqual(errors,[]);});
+await page.evaluate(id=>window.novel.selectBook(id),demoId);await reload();await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1380,930));await page.locator('#return-to-input').click();await page.screenshot({path:path.join(evidence,'continuous-desktop.png')});
+fs.writeFileSync(path.join(evidence,'desktop-tests.json'),JSON.stringify({at:new Date().toISOString(),scope:'Isolated desktop tests; simulated provider; no real credentials',checks},null,2));console.log(JSON.stringify({passed:checks.length}));
+}finally{if(app)await app.close().catch(()=>{});}})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>NovelType · 逐页</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="renderer.js"></script>
+</head>
+<body>
+  <a href="#typing-input" class="skip-link">跳到打字练习</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="书库">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">N<span>t</span></span><div><strong>NovelType</strong><span class="brand-cn">逐 页 · 英 文 打 字</span></div></div>
+      <div class="shelf-heading"><span class="eyebrow">我的书架</span><span id="book-count" class="count">0</span></div>
+      <nav id="book-list" class="book-list" aria-label="已导入的小说"></nav>
+      <div class="import-actions"><button id="import-file" class="button primary">＋ 导入 TXT 小说</button><button id="open-paste" class="button quiet">或粘贴一段文字</button></div>
+      <div class="shelf-bottom">
+        <div class="local-note"><span class="status-dot"></span><div><strong>故事，留在这台电脑</strong><p>书库与进度保存在本机。<br>开始练习后按需翻译相邻短段。</p></div></div>
+        <button id="open-settings" class="sidebar-link"><span aria-hidden="true">⚙</span> 翻译设置 <span id="provider-badge" class="mini-tag">未配置</span></button>
+        <div class="backup-links"><button id="export-backup">导出备份</button><span>·</span><button id="import-backup">恢复备份</button><span>·</span><button id="open-folder">数据目录</button></div>
+        <div class="edition">A LITTLE EVERY DAY. <span>01 / DESKTOP</span></div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar"><span>THE READING ROOM <span class="topbar-line"></span> 阅读与练习</span><span id="save-state" class="save-state" role="status">正在打开书库…</span></header>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section id="empty-state" class="empty-state" hidden><span class="empty-ornament" aria-hidden="true">Aa</span><p class="eyebrow">YOUR NEXT CHAPTER</p><h1>从一个故事开始。</h1><p>导入中文小说，逐段翻译，<br>把喜欢的故事，敲成自己的英语。</p><button id="empty-import" class="button primary">导入第一本 TXT 小说</button></section>
+      <div id="reading-view" hidden>
+        <section class="book-heading" aria-labelledby="book-title"><div><div class="heading-kicker"><span class="eyebrow">正在阅读</span><span id="demo-label" class="tag" hidden>原创双语示例</span></div><h1 id="book-title">逐页</h1><p id="book-meta" class="book-meta"></p></div><div class="book-progress"><span id="book-progress-label">已完成 0%</span><progress id="book-progress" max="100" value="0" aria-label="全书练习进度"></progress><small id="completed-count"></small></div></section>
+
+        <section class="continuous-reading" aria-label="连续阅读与打字练习">
+          <div class="stream-toolbar">
+            <div class="stream-title"><p class="eyebrow">ONE CONTINUOUS STORY</p><h2>顺着故事，一直打下去。</h2><span id="stream-position"></span></div>
+            <div class="stream-actions"><button id="return-to-input" class="button text-button">回到输入处 ↓</button><button id="pause" class="button secondary" aria-pressed="false">Ⅱ 暂停</button><button id="translate" class="button primary">开始连续练习</button></div>
+            <div class="stream-metrics" aria-label="本次练习统计"><span><b id="wpm">0</b> WPM</span><span><b id="accuracy">100</b>% 准确率</span><span id="elapsed">00:00</span><span id="session-note">打完自动接续；可随时上下滚动。</span></div>
+          </div>
+          <p id="translation-disclosure" class="stream-disclosure">练习时提前翻译下一小段，可暂停；滑动不会整本翻译。API 可能计费。</p>
+          <div id="stream-top" class="stream-sentinel" aria-hidden="true"></div>
+          <div id="story-stream" class="story-stream" aria-label="小说连续正文"></div>
+          <div id="stream-bottom" class="stream-sentinel" aria-hidden="true"></div>
+          <p id="book-finished" class="book-finished" role="status" hidden>这一页接着那一页，你已经打完了整本故事。</p>
+          <div id="input-parking" hidden><div id="typing-panel" class="typing-panel">
+            <div class="input-heading"><span id="input-status">正在练习</span><div><button id="edit-translation" class="button text-button">编辑本段译文</button><button id="reset" class="button text-button">本段重练</button></div></div>
+            <label for="typing-input" class="sr-only">照着本段英文输入；打完自动接续下一段</label><textarea id="typing-input" rows="2" lang="en" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="点击这里，开始打字…" aria-describedby="typing-help" disabled></textarea>
+            <div class="typing-bottom"><span id="typing-help">不区分大小写 · 标点和空格需一致 · 打完自动接续</span><span id="character-count">0 / 0</span></div>
+          </div></div>
+        </section>
+        <footer class="reading-footer"><span>ONE PAGE. A FEW WORDS. A LITTLE CLOSER.</span><span id="footer-total">你的故事，你的节奏。</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="paste-dialog" aria-labelledby="paste-title"><form id="paste-form"><div class="modal-heading"><div><p class="eyebrow">ADD A STORY</p><h2 id="paste-title">把故事放进书架</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭">×</button></div><label for="paste-name">书名</label><input id="paste-name" type="text" maxlength="120" required placeholder="给这个故事起个名字"><label for="paste-text">中文正文</label><textarea id="paste-text" rows="9" required placeholder="粘贴小说或一段中文文字…"></textarea><p class="field-help">导入后自动分成适合打字的小段落，原文仅保存在本机。</p><p id="paste-message" class="form-message" role="status"></p><div class="modal-actions"><button type="button" class="button secondary close-dialog">取消</button><button id="paste-submit" type="submit" class="button primary">加入书架</button></div></form></dialog>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title"><form id="settings-form"><div class="modal-heading"><div><p class="eyebrow">TRANSLATION SETTINGS</p><h2 id="settings-title">为故事，接上翻译</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭">×</button></div><p class="modal-intro">使用你自己的 API Key。翻译与连接测试会请求所选服务商，可能产生少量费用。</p><label for="provider">API 服务商</label><select id="provider"><option value="glm">智谱 GLM</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="custom">自定义 OpenAI 兼容服务</option></select><label for="base-url">API Base URL</label><input id="base-url" type="url" required spellcheck="false" autocomplete="off"><label for="model">模型名称</label><input id="model" type="text" required spellcheck="false" autocomplete="off"><label for="api-key">API Key <span id="key-status" class="field-help"></span></label><input id="api-key" type="password" spellcheck="false" autocomplete="new-password" placeholder="输入 API Key"><p id="key-help" class="field-help">密钥由 Windows 加密保存在本机，不包含在导出备份中。</p><label class="checkbox-label"><input id="clear-key" type="checkbox">清除已保存的 API Key</label><div class="privacy-note">开始连续练习后，仅翻译当前及下一小段；暂停会停止安排后续请求。滑动浏览不会上传整本小说。请确认服务地址后再保存密钥。</div><p id="settings-message" class="form-message" role="status"></p><div class="modal-actions"><button id="test-connection" type="button" class="button secondary">测试已保存的连接</button><button id="save-settings" type="submit" class="button primary">保存设置</button></div></form></dialog>
+
+  <dialog id="edit-dialog" aria-labelledby="edit-title"><form id="edit-form"><div class="modal-heading"><div><p class="eyebrow">YOUR ENGLISH EDITION</p><h2 id="edit-title">编辑这一段译文</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭">×</button></div><label for="edit-text">英文译文</label><textarea id="edit-text" rows="10" required lang="en" spellcheck="true"></textarea><p class="field-help">保存后以你的版本练习，并重新开始当前输入。你也可以直接粘贴自己的英文翻译。</p><p id="edit-message" class="form-message" role="status"></p><div class="modal-actions"><button type="button" class="button secondary close-dialog">取消</button><button id="edit-submit" type="submit" class="button primary">保存译文</button></div></form></dialog>
+</body>
+</html>
+

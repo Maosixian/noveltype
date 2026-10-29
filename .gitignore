@@ -1,0 +1,17 @@
+node_modules/
+dist/
+evidence/
+*.log
+.local-tools/
+research/
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+settings.json
+library.json
+library.json.bak
+NovelType-backup*.json
