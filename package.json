@@ -1,13 +1,18 @@
 {
   "name": "noveltype",
   "productName": "NovelType",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Read stories. Type English. A private desktop novel typing tutor.",
   "main": "app/main.cjs",
   "author": "Xavier",
   "license": "UNLICENSED",
-  "repository": { "type": "git", "url": "https://github.com/Maosixian/noveltype.git" },
-  "bugs": { "url": "https://github.com/Maosixian/noveltype/issues" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maosixian/noveltype.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Maosixian/noveltype/issues"
+  },
   "homepage": "https://github.com/Maosixian/noveltype/releases",
   "scripts": {
     "start": "electron .",
@@ -18,7 +23,9 @@
     "test:desktop": "node -e \"require('node:fs').mkdirSync('evidence',{recursive:true})\" && node test/continuous-smoke.cjs"
   },
   "devDependencies": {
+    "@electron/asar": "4.0.1",
     "@electron/packager": "20.3.0",
+    "7zip-bin": "5.2.0",
     "electron": "45.1.0",
     "electron-builder": "26.18.0",
     "playwright": "^1.64.1"
