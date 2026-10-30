@@ -25,7 +25,7 @@ function register(){
   bind('getState',state);
   bind('importText',input=>{library.importText(input);return state();});
   bind('selectBook',id=>{library.selectBook(id);return state();});
-  bind('saveProgress',input=>{library.saveProgress(input);return state();});
+  bind('saveProgress',input=>library.saveProgress(input));
   bind('setTranslation',input=>{library.setTranslation(input);return state();});
   bind('saveSettings',input=>{if(busy)throw new Error('翻译进行中，请完成后再修改设置。');validateSettings(input);return settings.save(input);});
   bind('importFile',async()=>{
@@ -75,7 +75,7 @@ async function create(){
       closeTimer=setTimeout(async()=>{closePending=false;const pick=await dialog.showMessageBox(win,{type:'warning',message:'保存进度没有及时响应。',detail:'返回软件可以继续等待；直接退出可能丢失最后输入的几个字符。',buttons:['返回软件','直接退出'],defaultId:0,cancelId:0});if(pick.response===1){closing=true;win.close();}},4000);
     });
     await win.loadFile(entry);
-  }catch{const result=await dialog.showMessageBox({type:'error',title:'NovelType 启动失败',message:'无法读取本机书库或设置，原数据已保留。',detail:'请先复制整个数据目录备份。library.json 损坏时会自动尝试 library.json.bak；两份均损坏时可用导出的书库 JSON 替换 library.json。设置损坏时可将 settings.json 改名后重新输入 Key。\n数据目录：'+app.getPath('userData'),buttons:['退出','打开数据目录'],defaultId:0});if(result.response===1)await shell.openPath(app.getPath('userData'));app.quit();}
+  }catch{const result=await dialog.showMessageBox({type:'error',title:'NovelType 启动失败',message:'无法读取本机书库或设置，原数据已保留。',detail:'请先复制整个数据目录备份。请成套保留 library 开头的书库、备份和进度日志文件，不要只替换单个文件；可联系维护者检查或恢复已导出的完整书库。设置损坏时可将 settings.json 改名后重新输入 Key。\n数据目录：'+app.getPath('userData'),buttons:['退出','打开数据目录'],defaultId:0});if(result.response===1)await shell.openPath(app.getPath('userData'));app.quit();}
 }
 if(lock)app.whenReady().then(create);
 app.on('window-all-closed',()=>app.quit());

@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const { normalizeTypography } = require('./translation.cjs');
 
 const MAX_BOOK_BYTES = 10 * 1024 * 1024;
@@ -10,6 +10,11 @@ const MAX_LIBRARY_BYTES = 64 * 1024 * 1024;
 const MAX_SEGMENTS = 100000;
 const MAX_TRANSLATION = 10000;
 const MAX_BOOKS = 100;
+const MAX_JOURNAL_BYTES = 2 * 1024 * 1024;
+const jsonBytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8');
+const digest = value => createHash('sha256').update(value).digest('hex');
+const validStats = stats => exactKeys(stats, ['sessions', 'characters', 'seconds']) && integer(stats.sessions, 0, 1000000000) && integer(stats.characters, 0, 1000000000000) && bounded(stats.seconds, 0, 1000000000000);
+const progressFields = book => ({ position: book.position, draft: book.draft, completed: book.completed, stats: book.stats });
 const clone = value => structuredClone(value);
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const bounded = (value, min, max) => typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
@@ -112,8 +117,15 @@ class Library {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'library.json');
     this.backup = `${this.file}.bak`;
+    this.journal = path.join(dataDir, 'library.journal.jsonl');
+    this.journalBase = path.join(dataDir, 'library.journal-base.json');
+    this.journalReady = false;
+    this.journalSequence = 0;
+    this.journalBytes = 0;
+    this.writeFailed = false;
     fs.mkdirSync(dataDir, { recursive: true });
     this.state = this._load();
+    this.serializedBytes = jsonBytes(this.state);
   }
 
   _read(file) {
@@ -121,7 +133,7 @@ class Library {
     return validateData(JSON.parse(fs.readFileSync(file, 'utf8')));
   }
 
-  _load() {
+  _loadSnapshot() {
     const hasMain = fs.existsSync(this.file);
     const hasBackup = fs.existsSync(this.backup);
     if (!hasMain && !hasBackup) {
@@ -141,15 +153,162 @@ class Library {
     return restored;
   }
 
+  _load() {
+    if (!fs.existsSync(this.journal)) return this._loadSnapshot();
+    try {
+      const size = fs.statSync(this.journal).size;
+      if (size > MAX_JOURNAL_BYTES || size < 1) throw new Error('invalid journal size');
+      const bytes = fs.readFileSync(this.journal);
+      const completeLength = bytes.lastIndexOf(10) + 1;
+      if (!completeLength) throw new Error('missing journal header');
+      const lines = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, completeLength)).split('\n');
+      lines.pop();
+      const header = JSON.parse(lines.shift());
+      if (!exactKeys(header, ['version', 'baseSha256']) || header.version !== 1 || typeof header.baseSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(header.baseSha256)) throw new Error('invalid journal header');
+      if (fs.statSync(this.journalBase).size > MAX_LIBRARY_BYTES) throw new Error('invalid journal base');
+      const base = fs.readFileSync(this.journalBase);
+      if (digest(base) !== header.baseSha256) throw new Error('journal base mismatch');
+      this.state = validateData(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(base)));
+      this.serializedBytes = jsonBytes(this.state);
+      for (const line of lines) {
+        const record = JSON.parse(line);
+        if (!exactKeys(record, ['sequence', 'change']) || record.sequence !== this.journalSequence + 1) throw new Error('invalid journal sequence');
+        const change = this._buildChange(record.change);
+        change.apply(); this.serializedBytes += change.delta;
+        this.journalSequence = record.sequence;
+      }
+      this.journalBytes = completeLength;
+      this.journalReady = true;
+      let primary;
+      try { primary = fs.readFileSync(this.file); } catch { /* Recover from the bound journal base. */ }
+      if (!primary || digest(primary) !== header.baseSha256) {
+        // A completed checkpoint can reach the primary file before the old journal is removed.
+        // Any other valid primary is an unrelated restore: do not replay old progress over it.
+        let primaryData;
+        if (primary) { try { primaryData = validateData(JSON.parse(primary.toString('utf8'))); } catch { /* corrupt primary */ } }
+        if (primaryData && JSON.stringify(primaryData) !== JSON.stringify(this.state)) throw new Error('primary and journal mismatch');
+        if (primary && !primaryData) fs.copyFileSync(this.file, path.join(this.dataDir, `library.corrupt-${Date.now()}-${randomUUID()}.json`));
+        if (completeLength !== bytes.length) fs.copyFileSync(this.journal, path.join(this.dataDir, `library.journal.corrupt-${Date.now()}-${randomUUID()}.jsonl`));
+        this._checkpoint();
+      } else if (completeLength !== bytes.length) {
+        // Only an incomplete final record is recoverable. Complete malformed records fail closed.
+        fs.copyFileSync(this.journal, path.join(this.dataDir, `library.journal.corrupt-${Date.now()}-${randomUUID()}.jsonl`));
+        const fd = fs.openSync(this.journal, 'r+');
+        try { fs.ftruncateSync(fd, completeLength); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      }
+      return this.state;
+    } catch {
+      throw new Error('本地进度日志损坏或与书库不匹配，原文件已保留。请保留整个数据目录后恢复完整备份。');
+    }
+  }
+
+  _checkpoint() {
+    if (!this.journalReady) return;
+    const text = JSON.stringify(this.state);
+    // Both snapshots include every acknowledged change before journal removal. A crash before
+    // removal can replay the old bound base; a crash after removal uses either complete snapshot.
+    atomicWrite(this.backup, text);
+    atomicWrite(this.file, text);
+    fs.unlinkSync(this.journal);
+    this.journalReady = false; this.journalSequence = 0; this.journalBytes = 0;
+    // An orphan base is harmless and will be replaced before the next journal header is committed.
+  }
+
+  _ensureJournal() {
+    if (this.journalReady) return;
+    const base = fs.readFileSync(this.file);
+    atomicWrite(this.journalBase, base);
+    const header = JSON.stringify({ version: 1, baseSha256: digest(base) }) + '\n';
+    atomicWrite(this.journal, header);
+    this.journalReady = true; this.journalSequence = 0; this.journalBytes = Buffer.byteLength(header);
+  }
+
+  _append(change) {
+    this._assertWritable();
+    let fd, originalLength;
+    try {
+      let text = JSON.stringify({ sequence: this.journalSequence + 1, change }) + '\n';
+      if (this.journalReady && this.journalBytes + Buffer.byteLength(text) > MAX_JOURNAL_BYTES) this._checkpoint();
+      this._ensureJournal();
+      text = JSON.stringify({ sequence: this.journalSequence + 1, change }) + '\n';
+      if (this.journalBytes + Buffer.byteLength(text) > MAX_JOURNAL_BYTES) throw new Error('change too large');
+      fd = fs.openSync(this.journal, 'r+');
+      originalLength = fs.fstatSync(fd).size;
+      if (originalLength !== this.journalBytes) { this.writeFailed = true; throw new Error('journal changed externally'); }
+      const written = fs.writeSync(fd, text, originalLength, 'utf8');
+      if (written !== Buffer.byteLength(text)) throw new Error('short write');
+      fs.fsyncSync(fd);
+      this.journalBytes += written; this.journalSequence++;
+    } catch {
+      if (fd !== undefined && originalLength !== undefined && !this.writeFailed) {
+        try { fs.ftruncateSync(fd, originalLength); fs.fsyncSync(fd); } catch { this.writeFailed = true; }
+      }
+      throw new Error('本地保存失败，请检查磁盘空间和数据目录权限。');
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch {
+          this.writeFailed = true;
+          throw new Error('本地保存失败，请重启软件恢复进度日志后重试。');
+        }
+      }
+    }
+  }
+
+  _buildChange(record) {
+    if (!plain(record)) throw new Error('进度日志格式不正确。');
+    const book = this._book(record.bookId);
+    let delta, apply;
+    if (record.type === 'progress') {
+      if (!exactKeys(record, ['type', 'bookId', 'position', 'draft', 'completed', 'stats']) || !validText(record.draft, MAX_TRANSLATION) || !validStats(record.stats)) throw new Error('练习统计或进度格式不正确。');
+      this._index(book, record.position);
+      let completed = book.completed;
+      if (record.completed !== null) {
+        this._index(book, record.completed);
+        if (!book.segments[record.completed].translation) throw new Error('请先为该段落添加译文。');
+        if (!completed.includes(record.completed)) completed = [...completed, record.completed].sort((a,b) => a-b);
+      }
+      const next = { position: record.position, draft: record.draft, completed, stats: clone(record.stats) };
+      delta = jsonBytes(next) - jsonBytes(progressFields(book));
+      apply = () => Object.assign(book, next);
+    } else if (record.type === 'translation') {
+      if (!exactKeys(record, ['type', 'bookId', 'index', 'translation', 'clearDraft']) || !validText(record.translation, MAX_TRANSLATION, false) || typeof record.clearDraft !== 'boolean') throw new Error('译文日志格式不正确。');
+      this._index(book, record.index);
+      const segment = book.segments[record.index];
+      delta = jsonBytes(record.translation) - jsonBytes(segment.translation) + (record.clearDraft ? jsonBytes('') - jsonBytes(book.draft) : 0);
+      apply = () => { segment.translation = record.translation; if (record.clearDraft) book.draft = ''; };
+    } else if (record.type === 'select') {
+      if (!exactKeys(record, ['type', 'bookId'])) throw new Error('选书日志格式不正确。');
+      delta = jsonBytes(record.bookId) - jsonBytes(this.state.activeBookId);
+      apply = () => { this.state.activeBookId = record.bookId; };
+    } else throw new Error('进度日志类型不正确。');
+    if (this.serializedBytes + delta > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 64 MB，请先导出备份。');
+    return { delta, apply };
+  }
+
+  _change(record) {
+    const change = this._buildChange(record);
+    this._append(record);
+    change.apply(); this.serializedBytes += change.delta;
+  }
+
+  _progressResult(book) { return clone({ bookId: book.id, ...progressFields(book) }); }
+
+  _assertWritable() {
+    if (this.writeFailed) throw new Error('本地保存失败，请重启软件恢复进度日志后重试。');
+  }
+
   _commit(next) {
+    this._assertWritable();
     const valid = validateData(next);
     const text = JSON.stringify(valid);
     if (Buffer.byteLength(text, 'utf8') > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 64 MB，请先导出备份。');
     try {
+      this._checkpoint();
       atomicWrite(this.backup, JSON.stringify(this.state));
       atomicWrite(this.file, text);
     } catch { throw new Error('本地保存失败，请检查磁盘空间和数据目录权限。'); }
     this.state = valid;
+    this.serializedBytes = Buffer.byteLength(text, 'utf8');
     return this.getState();
   }
 
@@ -171,6 +330,7 @@ class Library {
   }
 
   importText(payload) {
+    this._assertWritable();
     if (!plain(payload) || !validText(payload.text, MAX_BOOK_BYTES, false)) throw new Error('小说内容为空、格式不正确或超过 10 MB。');
     if (Buffer.byteLength(payload.text, 'utf8') > MAX_BOOK_BYTES) throw new Error('小说大小不能超过 10 MB。');
     if (!validText(payload.title, 200, false)) throw new Error('书籍标题需为 1 至 200 个字符。');
@@ -184,44 +344,45 @@ class Library {
   }
 
   selectBook(id) {
+    this._assertWritable();
     this._book(id);
-    const next = clone(this.state); next.activeBookId = id;
-    return this._commit(next);
+    if (this.state.activeBookId !== id) this._change({ type: 'select', bookId: id });
+    return this.getState();
   }
 
   saveProgress(payload) {
+    this._assertWritable();
     if (!plain(payload)) throw new Error('进度格式不正确。');
-    const next = clone(this.state);
-    const book = this._book(payload.bookId, next);
+    const book = this._book(payload.bookId);
     this._index(book, payload.position);
     if (!validText(payload.draft, MAX_TRANSLATION)) throw new Error('输入内容格式不正确或过长。');
     if (payload.completed !== undefined) this._index(book, payload.completed);
     const session = payload.session;
     if (session !== undefined && (!exactKeys(session, ['characters', 'seconds', 'accuracy', 'wpm']) || !integer(session.characters, 0, MAX_TRANSLATION) || !bounded(session.seconds, 0, 86400) || !bounded(session.accuracy, 0, 100) || !bounded(session.wpm, 0, 10000) || (session.seconds === 0 && session.wpm !== 0))) throw new Error('练习统计格式不正确。');
-    book.position = payload.position; book.draft = payload.draft;
+    const stats = clone(book.stats);
+    let completed = null;
     if (payload.completed !== undefined && !book.completed.includes(payload.completed)) {
       if (!book.segments[payload.completed].translation) throw new Error('请先为该段落添加译文。');
-      book.completed.push(payload.completed);
-      book.completed.sort((a, b) => a - b);
+      completed = payload.completed;
       if (session) {
-        book.stats.sessions++;
-        book.stats.characters += session.characters;
-        book.stats.seconds += session.seconds;
+        stats.sessions++;
+        stats.characters += session.characters;
+        stats.seconds += session.seconds;
       }
     }
-    return this._commit(next);
+    if (book.position !== payload.position || book.draft !== payload.draft || completed !== null) this._change({ type: 'progress', bookId: book.id, position: payload.position, draft: payload.draft, completed, stats });
+    return this._progressResult(book);
   }
 
   setTranslation(payload) {
+    this._assertWritable();
     if (!plain(payload) || !validText(payload.translation, MAX_TRANSLATION, false)) throw new Error('译文不能为空或超过 10000 个字符。');
-    const next = clone(this.state);
-    const book = this._book(payload.bookId, next);
+    const book = this._book(payload.bookId);
     this._index(book, payload.index);
     const translation = normalizeTypography(payload.translation);
     if (translation.length > MAX_TRANSLATION) throw new Error('译文超过 10000 个字符。');
-    if (book.segments[payload.index].translation !== translation && book.position === payload.index) book.draft = '';
-    book.segments[payload.index].translation = translation;
-    return this._commit(next);
+    if (book.segments[payload.index].translation !== translation) this._change({ type: 'translation', bookId: book.id, index: payload.index, translation, clearDraft: book.position === payload.index });
+    return { bookId: book.id, index: payload.index, translation, draft: book.draft };
   }
 
   getSegment(bookId, index) {
@@ -229,7 +390,7 @@ class Library {
     return clone(book.segments[index]);
   }
   exportData() { return clone(this.state); }
-  importData(data) { return this._commit(validateData(data)); }
+  importData(data) { this._assertWritable(); return this._commit(validateData(data)); }
 }
 
 module.exports = { Library, chunkText, MAX_BOOK_BYTES, MAX_LIBRARY_BYTES };

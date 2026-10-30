@@ -27,8 +27,11 @@ function drainSaves(){
     while(savePending.length){
       const snapshot=savePending[0];
       const saved=await api.saveProgress(snapshot);
-      const local=state.books.find(book=>book.id===snapshot.bookId),persisted=saved.books.find(book=>book.id===snapshot.bookId);
-      if(local&&persisted){local.stats=persisted.stats;local.completed=[...new Set([...local.completed,...persisted.completed])].sort((a,b)=>a-b);}
+      if(saved.bookId!==snapshot.bookId)throw new Error('进度保存响应不一致，请重试。');
+      const local=state.books.find(book=>book.id===snapshot.bookId);
+      // A save can finish after more typing or an automatic advance. Merge durable
+      // totals only; an older acknowledgement must never replace the live draft.
+      if(local){local.stats=saved.stats;local.completed=[...new Set([...local.completed,...saved.completed])].sort((a,b)=>a-b);}
       savePending.shift();
       if(snapshot.completed!==undefined){renderLibrary();renderOverview();}
     }
@@ -115,7 +118,7 @@ async function ensureTranslations(){
   if(translationTask)return translationTask;
   const book=currentBook();if(!book||!continuousEnabled||explicitPause||busy||document.hidden)return;
   const candidate=translationCandidate(book.segments,book.position,true);if(candidate===null)return;
-  if(!state.settings.hasKey){stopContinuous();notice('下一小段需要翻译。请在左侧「翻译设置」保存 API Key，再点击开始连续练习；也可编辑译文。');renderControls();return;}
+  if(!state.settings.hasKey){stopContinuous();notice('后续段落需要翻译。请在左侧「翻译设置」保存 API Key，再点击开始连续练习；也可编辑译文。');renderControls();return;}
   const bookId=book.id,source=book.segments[candidate].source,epoch=translationEpoch;translationIndex=candidate;translationBookId=bookId;
   translationTask=(async()=>{
     try{const result=await api.translate({bookId,index:candidate});const local=state.books.find(item=>item.id===bookId);if(!local||local.segments[candidate]?.source!==source)return;local.segments[candidate].translation=result.translation;
@@ -134,7 +137,7 @@ async function runStateAction(action,successMessage=''){
   if(busy)return;stopContinuous();busy=true;renderControls();renderLibrary();try{await flushSave();const result=await action();if(result){normalizeState(result);renderLibrary();renderPassage();if(successMessage)notice(successMessage);}}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();}
 }
 async function selectBook(id){if(id!==state.activeBookId)await runStateAction(()=>api.selectBook(id));}
-async function chooseParagraph(position){const book=currentBook();if(!book||busy)return;if(position===book.position){revealInput();return;}stopContinuous();busy=true;renderControls();try{await flushSave();normalizeState(await api.saveProgress({bookId:book.id,position,draft:''}));explicitPause=false;session=new TypingSession(currentSegment().translation||'');liveTotals={characters:0,seconds:0,attempts:0,errors:0};mountActive({focus:true,scroll:true});notice('');}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();if(!explicitPause&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}}
+async function chooseParagraph(position){const book=currentBook();if(!book||busy)return;if(position===book.position){revealInput();return;}stopContinuous();busy=true;renderControls();try{await flushSave();const saved=await api.saveProgress({bookId:book.id,position,draft:''});if(saved.bookId!==book.id)throw new Error('进度保存响应不一致，请重试。');book.position=saved.position;book.draft=saved.draft;book.stats=saved.stats;book.completed=[...new Set([...book.completed,...saved.completed])].sort((a,b)=>a-b);explicitPause=false;session=new TypingSession(currentSegment().translation||'',book.draft);liveTotals={characters:0,seconds:0,attempts:0,errors:0};mountActive({focus:true,scroll:true});notice('');}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();if(!explicitPause&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}}
 function pauseForDialog(){stopContinuous();explicitPause=true;renderControls();}
 function lockImportDialog(id,locked){for(const control of $(id).querySelectorAll('button,input,textarea'))control.disabled=locked;$(id).dataset.saving=String(locked);}
 function openSettings(message=''){pauseForDialog();$('provider').value=state.settings.provider||'glm';$('base-url').value=state.settings.baseUrl||presets.glm.baseUrl;$('model').value=state.settings.model||presets.glm.model;$('api-key').value='';$('clear-key').checked=false;updateKeyHelp();formMessage('settings-message',message);$('settings-dialog').showModal();}
@@ -224,7 +227,7 @@ $('settings-form').addEventListener('submit', async (event) => {
     $('clear-key').checked = false;
     updateKeyHelp();
     renderLibrary();
-    if (!currentSegment()?.translation) $('translation-disclosure').textContent = `连续练习时只准备当前及下一小段；可随时暂停。API 服务商可能计费。`;
+    if (!currentSegment()?.translation) $('translation-disclosure').textContent = `当前段译好即可开始输入，后台按顺序预译后 3 段；可随时暂停。API 服务商可能计费。`;
     formMessage('settings-message', state.settings.hasKey ? '设置已保存。可测试连接，或关闭后开始连续练习。' : '设置已保存。尚未保存 API Key；添加后才可请求翻译。');
   } catch (error) {
     formMessage('settings-message', errorText(error), true);

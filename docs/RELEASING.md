@@ -5,7 +5,7 @@
 ## 日常修改
 
 1. 从 `main` 新建分支，修改程序与必要测试。
-2. 执行 `npm ci`、`npm test`、`npm run test:desktop`。
+2. 执行 `npm ci`、`npm test`、`npm run test:desktop`、`npm run test:performance`。性能检查只使用约 43 MB 的合成书库。
 3. 审查 diff，确认没有 Key、小说、备份、个人路径或本机证据文件。
 4. 通过 PR 合并代码。若只是本机验证，不能宣称已发布。
 
