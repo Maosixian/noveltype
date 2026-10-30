@@ -46,14 +46,15 @@ test('prefetch translation commit preserves current draft, progress, and unrelat
 test('failed completion can be retried before the current draft without losing either completion', t => {
   const { dir, library } = setup(t);
   const bookId = library.getState().activeBookId;
-  const originalRename = fs.renameSync;
+  library.saveProgress({ bookId, position: 0, draft: 'A' });
+  const originalSync = fs.fsyncSync;
   let failOnce = true;
-  t.mock.method(fs, 'renameSync', (source, destination) => {
-    if (failOnce && destination === path.join(dir, 'library.json')) {
+  t.mock.method(fs, 'fsyncSync', (fd) => {
+    if (failOnce) {
       failOnce = false;
       throw new Error('synthetic disk failure');
     }
-    return originalRename(source, destination);
+    return originalSync(fd);
   });
   const first = { bookId, position: 0, draft: library.getSegment(bookId, 0).translation, completed: 0, session: completion };
   assert.throws(() => library.saveProgress(first), /保存失败/);

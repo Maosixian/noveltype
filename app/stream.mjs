@@ -3,6 +3,8 @@ export function extendRange(range,direction,total){return direction<0?{start:Mat
 export function nextPosition(position,total,complete){return complete&&position+1<total?position+1:position;}
 export function translationCandidate(segments,position,enabled){
   if(!enabled||!segments[position])return null;
-  if(!segments[position].translation)return position;
-  return segments[position+1]&&!segments[position+1].translation?position+1:null;
+  for(let index=position;index<Math.min(segments.length,position+4);index++){
+    if(!segments[index].translation)return index;
+  }
+  return null;
 }
