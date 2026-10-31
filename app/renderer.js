@@ -1,5 +1,6 @@
 import { TypingSession, charactersMatch } from './typing.mjs';
-import { initialRange, extendRange, nextPosition, translationCandidate } from './stream.mjs';
+import { initialRange, extendRange, nextPosition } from './stream.mjs';
+import { alignmentAtCursor, targetOffset } from './alignment.mjs';
 const $=id=>document.getElementById(id);
 const api=window.novel;
 const presets={glm:{label:'智谱 GLM',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4.7-flash'},deepseek:{label:'DeepSeek',baseUrl:'https://api.deepseek.com',model:'deepseek-flash'},openai:{label:'OpenAI',baseUrl:'https://api.openai.com/v1',model:'gpt-4o-mini'},custom:{label:'自定义服务',baseUrl:'',model:''}};
@@ -10,11 +11,57 @@ let saveTimer,savePromise=null,saveFailure=false,movingInput=false,range={start:
 let liveTotals={characters:0,seconds:0,attempts:0,errors:0};
 const savePending=[];
 const rows=new Map();
+const alignmentEntries=new Map();
 const currentBook=()=>state.books.find(book=>book.id===state.activeBookId);
 const currentSegment=()=>currentBook()?.segments[currentBook().position];
 const now=()=>performance.now();
 const providerName=()=>presets[state.settings.provider]?.label||'自定义服务';
 const errorText=error=>error?.message||'操作未完成，请重试。';
+function alignmentEntry(book,index){
+  const segment=book.segments[index],key=`${book.id}:${index}`;
+  let entry=alignmentEntries.get(key);
+  if(!entry||entry.source!==segment.source||entry.translation!==segment.translation){
+    entry={source:segment.source,translation:segment.translation,alignment:null,loaded:false,promise:null};
+    alignmentEntries.set(key,entry);
+  }
+  // Only keep a small working set; durable maps live in the main-process cache.
+  if(alignmentEntries.size>128){for(const [oldKey,oldEntry] of alignmentEntries){if(oldKey!==key&&!oldEntry.promise){alignmentEntries.delete(oldKey);break;}}}
+  return entry;
+}
+async function readAlignment(book,index){
+  const entry=alignmentEntry(book,index);
+  if(!entry.translation||entry.loaded)return;
+  if(entry.promise)return entry.promise;
+  entry.promise=api.getAlignment({bookId:book.id,index}).then(alignment=>{
+    const local=state.books.find(item=>item.id===book.id);
+    if(!local||local.segments[index]?.source!==entry.source||local.segments[index]?.translation!==entry.translation)return;
+    // A freshly prepared map can arrive while this older cache read is in flight.
+    if(alignmentEntry(local,index)!==entry)return;
+    if(!entry.alignment)entry.alignment=alignment;
+    entry.loaded=true;
+  }).finally(()=>{entry.promise=null;});
+  return entry.promise;
+}
+async function readAlignmentWindow(book){
+  await Promise.all(Array.from({length:Math.min(4,book.segments.length-book.position)},(_,offset)=>readAlignment(book,book.position+offset)));
+}
+function renderSourceGuide(){
+  const book=currentBook(),row=rows.get(book?.position);if(!row)return null;
+  const segment=currentSegment(),entry=alignmentEntry(book,book.position),input=$('typing-input');
+  const hit=alignmentAtCursor(segment.translation,session?.value||'',input.selectionStart,entry.alignment);
+  const source=row.querySelector('.stream-source'),status=row.querySelector('.guide-status');
+  status.hidden=false;
+  status.textContent=entry.alignment?'中文词句同步对照':translationBookId===book.id&&translationIndex===book.position?'正在准备中文对照…':explicitPause?'中文对照已暂停；点击继续准备':'点击开始练习，准备中文对照';
+  const key=hit?`${hit.span.sourceStart}:${hit.span.sourceEnd}`:'';
+  if(row.guideRange!==key){
+    if(hit){
+      const mark=document.createElement('mark');mark.className='source-highlight';mark.textContent=segment.source.slice(hit.span.sourceStart,hit.span.sourceEnd);
+      source.replaceChildren(document.createTextNode(segment.source.slice(0,hit.span.sourceStart)),mark,document.createTextNode(segment.source.slice(hit.span.sourceEnd)));
+    }else source.textContent=segment.source;
+    row.guideRange=key;
+  }
+  return hit;
+}
 function notice(message,error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error);$('notice').hidden=!message;}
 function formMessage(id,message,error=false){$(id).textContent=message;$(id).classList.toggle('error',error);}
 function normalizeState(next){state=next;if(!state.books.some(book=>book.id===state.activeBookId))state.activeBookId=state.books[0]?.id||null;}
@@ -72,16 +119,39 @@ function renderControls(){
   $('session-note').textContent=explicitPause?'已暂停；不会再安排新翻译。':'打完自动接续；上下滚动不改变输入位置。';
   for(const id of ['import-file','empty-import','open-paste','export-backup','import-backup'])$(id).disabled=busy;
   for(const row of rows.values())row.querySelector('.practice-here').disabled=busy;
+  renderSourceGuide();
 }
 function renderMetrics(){const snap=session?.snapshot(now());const seconds=liveTotals.seconds+(snap?.seconds||0),characters=liveTotals.characters+(snap?.characters||0),attempts=liveTotals.attempts+(snap?.attempts||0),errors=liveTotals.errors+(snap?.errors||0);$('wpm').textContent=String(seconds>=1?Math.round(characters/5/(seconds/60)):0);$('accuracy').textContent=String(attempts?Math.round((attempts-errors)/attempts*100):100);$('elapsed').textContent=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;}
 function createParagraph(index){
   const book=currentBook(),segment=book.segments[index],row=document.createElement('article');row.className='story-passage';row.dataset.index=String(index);
   const heading=document.createElement('div');heading.className='story-passage-heading';const label=document.createElement('span');label.className='paragraph-number';label.textContent=String(index+1).padStart(3,'0');const status=document.createElement('span');status.className='paragraph-status';const select=document.createElement('button');select.type='button';select.className='practice-here button text-button';select.textContent='从这里练习';select.addEventListener('click',()=>chooseParagraph(index));heading.append(label,status,select);
   const source=document.createElement('p');source.className='stream-source';source.textContent=segment.source;
-  const english=document.createElement('p');english.className='stream-english';english.lang='en';row.append(heading,source,english);rows.set(index,row);updateParagraph(index);return row;
+  const guide=document.createElement('p');guide.className='guide-status';guide.hidden=true;
+  const english=document.createElement('p');english.className='stream-english';english.lang='en';row.append(heading,guide,source,english);rows.set(index,row);updateParagraph(index);return row;
 }
-function updateParagraph(index){const row=rows.get(index),book=currentBook();if(!row||!book)return;const segment=book.segments[index],active=index===book.position;row.classList.toggle('is-complete',book.completed.includes(index));row.classList.toggle('is-active',active);row.querySelector('.paragraph-status').textContent=active?'当前输入':book.completed.includes(index)?'已练习':segment.translation?'译文已就绪':'待练习时翻译';row.querySelector('.practice-here').hidden=active;if(!active){row.querySelector('.stream-english').textContent=segment.translation||'开始练习后，将按顺序准备英文译文。';row.querySelector('.stream-english').classList.toggle('untranslated',!segment.translation);}}
-function renderTarget(){const row=rows.get(currentBook()?.position);if(!row)return;const target=row.querySelector('.stream-english'),expected=Array.from(currentSegment()?.translation||''),value=Array.from(session?.value||'');target.classList.toggle('untranslated',!expected.length);const frag=document.createDocumentFragment();if(!expected.length){target.textContent='这一段的英文译文还在等待准备。';}else{expected.forEach((character,index)=>{const span=document.createElement('span');span.textContent=character;span.className='target-char';if(index<value.length)span.classList.add(charactersMatch(value[index],character)?'correct':'wrong');if(index===value.length&&!session?.complete)span.classList.add('caret');if(character===' ')span.classList.add('space');frag.append(span);});if(value.length>expected.length){const extra=document.createElement('span');extra.className='target-char wrong';extra.textContent=value.slice(expected.length).join('');frag.append(extra);}target.replaceChildren(frag);}$('character-count').textContent=`${value.length} / ${expected.length}`;}
+function updateParagraph(index){const row=rows.get(index),book=currentBook();if(!row||!book)return;const segment=book.segments[index],active=index===book.position;row.classList.toggle('is-complete',book.completed.includes(index));row.classList.toggle('is-active',active);row.querySelector('.paragraph-status').textContent=active?'当前输入':book.completed.includes(index)?'已练习':segment.translation?'译文已就绪':'待练习时翻译';row.querySelector('.practice-here').hidden=active;if(!active){row.querySelector('.stream-english').textContent=segment.translation||'开始练习后，将按顺序准备英文译文。';row.querySelector('.stream-english').classList.toggle('untranslated',!segment.translation);row.querySelector('.stream-source').textContent=segment.source;row.querySelector('.guide-status').hidden=true;row.guideRange='';}}
+function renderTarget(){
+  const row=rows.get(currentBook()?.position);if(!row)return;
+  const hit=renderSourceGuide(),target=row.querySelector('.stream-english');
+  const expected=Array.from(currentSegment()?.translation||''),value=Array.from(session?.value||'');
+  const cursor=targetOffset(currentSegment()?.translation||'',session?.value||'',$('typing-input').selectionStart);
+  target.classList.toggle('untranslated',!expected.length);
+  const frag=document.createDocumentFragment();let offset=0;
+  if(!expected.length){target.textContent='这一段的英文译文还在等待准备。';}
+  else{
+    expected.forEach((character,index)=>{
+      const span=document.createElement('span');span.textContent=character;span.className='target-char';
+      if(index<value.length)span.classList.add(charactersMatch(value[index],character)?'correct':'wrong');
+      if(offset===cursor&&!session?.complete)span.classList.add('caret');
+      if(character===' ')span.classList.add('space');
+      if(hit&&offset>=hit.word.start&&offset<hit.word.end)span.classList.add('aligned-word');
+      offset+=character.length;frag.append(span);
+    });
+    if(value.length>expected.length){const extra=document.createElement('span');extra.className='target-char wrong';extra.textContent=value.slice(expected.length).join('');frag.append(extra);}
+    target.replaceChildren(frag);
+  }
+  $('character-count').textContent=`${value.length} / ${expected.length}`;
+}
 function loadMore(direction){
   const book=currentBook();if(!book)return;const next=extendRange(range,direction,book.segments.length);if(next.start===range.start&&next.end===range.end)return;
   const anchor=direction<0?$('story-stream').firstElementChild:null;const top=anchor?.getBoundingClientRect().top;const fragment=document.createDocumentFragment();
@@ -95,9 +165,10 @@ function ensureRow(index){while(index>=range.end)loadMore(1);while(index<range.s
 function revealInput(focus=true){const row=rows.get(currentBook()?.position);if(!row)return;row.scrollIntoView({block:'start',behavior:'auto'});if(focus&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}
 function mountActive({focus=false,scroll=false}={}){
   const book=currentBook();if(!book)return;ensureRow(book.position);movingInput=true;
-  for(const [index,row] of rows){row.querySelector('.stream-source').removeAttribute('id');row.querySelector('.stream-english').removeAttribute('id');updateParagraph(index);}
-  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.append($('typing-panel'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
+  for(const [index,row] of rows){row.querySelector('.stream-source').removeAttribute('id');row.querySelector('.stream-english').removeAttribute('id');row.querySelector('.guide-status').removeAttribute('id');updateParagraph(index);}
+  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.querySelector('.guide-status').id='guide-status';row.append($('typing-panel'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
   if(scroll)revealInput(focus);else if(focus&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});
+  void readAlignmentWindow(book).then(()=>{if(currentBook()?.id===book.id)renderTarget();}).catch(()=>{if(currentBook()?.id===book.id)notice('中文对照缓存暂时无法读取，可以继续打字；点击开始练习可重试。',true);});
 }
 function renderPassage(){
   stopContinuous();explicitPause=false;const book=currentBook();$('reading-view').hidden=!book;$('empty-state').hidden=Boolean(book);movingInput=true;$('input-parking').append($('typing-panel'));rows.clear();$('story-stream').replaceChildren();movingInput=false;liveTotals={characters:0,seconds:0,attempts:0,errors:0};
@@ -117,14 +188,23 @@ function advanceCompleted(){
 async function ensureTranslations(){
   if(translationTask)return translationTask;
   const book=currentBook();if(!book||!continuousEnabled||explicitPause||busy||document.hidden)return;
-  const candidate=translationCandidate(book.segments,book.position,true);if(candidate===null)return;
-  if(!state.settings.hasKey){stopContinuous();notice('后续段落需要翻译。请在左侧「翻译设置」保存 API Key，再点击开始连续练习；也可编辑译文。');renderControls();return;}
-  const bookId=book.id,source=book.segments[candidate].source,epoch=translationEpoch;translationIndex=candidate;translationBookId=bookId;
+  const bookId=book.id,epoch=translationEpoch;
+  let prepared=false;
   translationTask=(async()=>{
-    try{const result=await api.translate({bookId,index:candidate});const local=state.books.find(item=>item.id===bookId);if(!local||local.segments[candidate]?.source!==source)return;local.segments[candidate].translation=result.translation;
+    try{
+      await readAlignmentWindow(book);
+      if(currentBook()?.id!==bookId||translationEpoch!==epoch||!continuousEnabled||explicitPause||busy||document.hidden)return;
+      let candidate=null;
+      for(let index=book.position;index<Math.min(book.segments.length,book.position+4);index++){if(!book.segments[index].translation||!alignmentEntry(book,index).alignment){candidate=index;break;}}
+      if(candidate===null)return;
+      if(!state.settings.hasKey){stopContinuous();notice('翻译或中文词句对照需要 AI。请在左侧「翻译设置」保存 API Key，再点击开始连续练习；已有译文仍可直接练习。');return;}
+      const source=book.segments[candidate].source,previousTranslation=book.segments[candidate].translation;
+      translationIndex=candidate;translationBookId=bookId;renderControls();
+      const result=await api.preparePassage({bookId,index:candidate});const local=state.books.find(item=>item.id===bookId);if(!local||local.segments[candidate]?.source!==source||local.segments[candidate]?.translation!==previousTranslation)return;local.segments[candidate].translation=result.translation;
+      const entry=alignmentEntry(local,candidate);entry.alignment=result.alignment;entry.loaded=true;prepared=true;
       if(currentBook()?.id===bookId){updateParagraph(candidate);if(currentBook().position===candidate&&!session?.target){session=new TypingSession(result.translation,currentBook().draft||'');mountActive({focus:continuousEnabled&&epoch===translationEpoch&&!explicitPause});}else if(currentBook().position===candidate)renderTarget();}
-    }catch(error){if(currentBook()?.id===bookId&&epoch===translationEpoch){stopContinuous();notice('翻译已停止：'+errorText(error)+' 点击「翻译并连续练习」手动重试。',true);}}
-    finally{translationTask=null;translationIndex=null;translationBookId=null;renderControls();if(continuousEnabled&&!explicitPause&&!busy)void ensureTranslations();}
+    }catch(error){if(currentBook()?.id===bookId&&epoch===translationEpoch){stopContinuous();notice('翻译与中文对照已停止：'+errorText(error)+' 点击开始练习可手动重试。',true);}}
+    finally{translationTask=null;translationIndex=null;translationBookId=null;renderControls();if(continuousEnabled&&!explicitPause&&!busy&&(prepared||translationEpoch!==epoch))void ensureTranslations();}
   })();renderControls();return translationTask;
 }
 async function startPractice(){
@@ -148,6 +228,7 @@ $('typing-input').addEventListener('input',event=>{
   session.resume(now());session.input($('typing-input').value,now());currentBook().draft=session.value;renderTarget();renderMetrics();
   if(session.complete){if(advanceCompleted())return;const book=currentBook(),completion=session.claimCompletion(now());queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})});if(!book.completed.includes(book.position))book.completed.push(book.position);renderLibrary();renderOverview();renderControls();}else scheduleSave();
 });
+for(const name of ['select','keyup','click'])$('typing-input').addEventListener(name,()=>{if(!movingInput&&session)renderTarget();});
 for(const name of ['paste','drop'])$('typing-input').addEventListener(name,event=>{event.preventDefault();notice('练习区只接受逐字键盘输入。自己的译文可粘贴到「编辑本段译文」。');});
 $('typing-input').addEventListener('beforeinput',event=>{if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||''))event.preventDefault();});
 $('typing-input').addEventListener('keydown',event=>{if(event.key==='Enter')event.preventDefault();});
@@ -227,7 +308,7 @@ $('settings-form').addEventListener('submit', async (event) => {
     $('clear-key').checked = false;
     updateKeyHelp();
     renderLibrary();
-    if (!currentSegment()?.translation) $('translation-disclosure').textContent = `当前段译好即可开始输入，后台按顺序预译后 3 段；可随时暂停。API 服务商可能计费。`;
+    $('translation-disclosure').textContent = '开始练习后准备英文和中文词句对照，提前缓存后面 3 小段；可随时暂停。滚动不请求 AI，API 可能计费。';
     formMessage('settings-message', state.settings.hasKey ? '设置已保存。可测试连接，或关闭后开始连续练习。' : '设置已保存。尚未保存 API Key；添加后才可请求翻译。');
   } catch (error) {
     formMessage('settings-message', errorText(error), true);

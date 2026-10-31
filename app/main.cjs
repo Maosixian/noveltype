@@ -6,9 +6,12 @@ const {pathToFileURL}=require('node:url');
 const {Library}=require('./library.cjs');
 const {translateText,testConnection,validateSettings}=require('./translation.cjs');
 const {SettingsStore,decodeText}=require('./security.cjs');
+const {AlignmentCache}=require('./alignment.cjs');
+const {getDemoAlignment}=require('./demo-alignment.cjs');
+const {preparePassage}=require('./practice.cjs');
 const entry=path.join(__dirname,'index.html');
 const entryUrl=pathToFileURL(entry).href;
-let win,library,settings,busy=false,closing=false,closePending=false,closeTimer;
+let win,library,settings,alignmentCache,busy=false,closing=false,closePending=false,closeTimer;
 if(!app.isPackaged&&process.env.NOVELTYPE_TEST_DATA)app.setPath('userData',process.env.NOVELTYPE_TEST_DATA);
 app.setName('NovelType');
 if(process.platform==='win32')app.setAppUserModelId('io.github.maosixian.noveltype');
@@ -27,6 +30,13 @@ function register(){
   bind('selectBook',id=>{library.selectBook(id);return state();});
   bind('saveProgress',input=>library.saveProgress(input));
   bind('setTranslation',input=>{library.setTranslation(input);return state();});
+  bind('getAlignment',({bookId,index}={})=>{const segment=library.getSegment(bookId,index);return segment.translation?alignmentCache.get(segment.source,segment.translation):null;});
+  bind('preparePassage',async({bookId,index}={})=>{
+    if(busy)throw new Error('已有 AI 请求进行中，请稍候。');
+    busy=true;
+    try{return await preparePassage({library,cache:alignmentCache,bookId,index,getCredentials:()=>({settings:settings.public(),apiKey:settings.key()}),fetchImpl:(url,options)=>net.fetch(url,options)});}
+    finally{busy=false;}
+  });
   bind('saveSettings',input=>{if(busy)throw new Error('翻译进行中，请完成后再修改设置。');validateSettings(input);return settings.save(input);});
   bind('importFile',async()=>{
     const pick=await dialog.showOpenDialog(win,{title:'导入中文小说',properties:['openFile'],filters:[{name:'TXT 文本',extensions:['txt']}]});
@@ -62,7 +72,10 @@ function register(){
 }
 async function create(){
   try{
-    settings=new SettingsStore(app.getPath('userData'),safeStorage);library=new Library(app.getPath('userData'));register();
+    settings=new SettingsStore(app.getPath('userData'),safeStorage);library=new Library(app.getPath('userData'));
+    const diskCache=new AlignmentCache(app.getPath('userData'));
+    alignmentCache={get:(source,translation)=>diskCache.get(source,translation)||getDemoAlignment(source,translation),set:(...args)=>diskCache.set(...args)};
+    register();
     session.defaultSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
     win=new BrowserWindow({width:1380,height:930,minWidth:880,minHeight:680,title:'NovelType · 逐页',backgroundColor:'#f5f3ed',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
     win.webContents.setWindowOpenHandler(()=>({action:'deny'}));

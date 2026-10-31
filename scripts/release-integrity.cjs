@@ -6,7 +6,7 @@ const crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process');
 const asar=require('@electron/asar');
 
-const appFiles=['main.cjs','preload.cjs','library.cjs','security.cjs','translation.cjs','typing.mjs','stream.mjs','renderer.js','index.html','styles.css'];
+const appFiles=['main.cjs','preload.cjs','library.cjs','security.cjs','translation.cjs','typing.mjs','stream.mjs','renderer.js','index.html','styles.css','alignment.cjs','alignment.mjs','demo-alignment.cjs','practice.cjs'];
 const allowed=new Set(['app','package.json','使用说明.md',...appFiles.map(name=>'app/'+name)]);
 function assertAppEntries(entries){
   for(const entry of entries){
