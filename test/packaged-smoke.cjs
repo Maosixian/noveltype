@@ -22,6 +22,12 @@ const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;delete env.NOVELTYPE_
   const state=await page.evaluate(()=>window.novel.getState());
   assert.equal(state.settings.hasKey,false);
   assert.equal(state.books.length,1);assert.equal(state.books[0].demo,true);
+  await page.waitForFunction(()=>document.querySelector('#source-text .source-highlight')?.textContent==='清晨');
+  await page.locator('#typing-input').click();await page.locator('#typing-input').pressSequentially('at dawn, L');
+  await page.waitForFunction(()=>document.querySelector('#source-text .source-highlight')?.textContent==='林舟');
+  assert.equal(await page.locator('#source-text').textContent(),state.books[0].segments[0].source);
+  assert.equal(await page.locator('.target-char.wrong').count(),0);
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'typing-input');
   assert.equal(fs.existsSync(path.join(data,'library.json')),true);
   const encryption=await app.evaluate(({safeStorage,app})=>({available:safeStorage.isEncryptionAvailable(),packaged:app.isPackaged,version:app.getVersion()}));
   assert.equal(encryption.available,true);assert.equal(encryption.packaged,true);
@@ -31,8 +37,8 @@ const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;delete env.NOVELTYPE_
   const network={tested:false,reason:'Fresh isolated profile; no API credentials configured or requests sent'};
   fs.mkdirSync(path.join(root,'evidence'),{recursive:true});
   await page.screenshot({path:path.join(root,'evidence/packaged-desktop.png'),fullPage:true});
-  fs.writeFileSync(path.join(root,'evidence/packaged-tests.json'),JSON.stringify({at:new Date().toISOString(),launch:true,isolatedUserData:true,continuousUI:true,caseInsensitive:true,encryption,network,realTranslationVerified:false},null,2));
-  console.log(JSON.stringify({packagedLaunch:true,isolatedUserData:true,continuousUI:true,caseInsensitive:true,encryption,network,realTranslationVerified:false}));
+  fs.writeFileSync(path.join(root,'evidence/packaged-tests.json'),JSON.stringify({at:new Date().toISOString(),launch:true,isolatedUserData:true,continuousUI:true,caseInsensitive:true,chineseHighlight:true,encryption,network,realTranslationVerified:false},null,2));
+  console.log(JSON.stringify({packagedLaunch:true,isolatedUserData:true,continuousUI:true,caseInsensitive:true,chineseHighlight:true,encryption,network,realTranslationVerified:false}));
 }finally{
   if(app)await app.close();
   const cleanupPath=path.resolve(data);

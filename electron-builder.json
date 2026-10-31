@@ -8,6 +8,7 @@
   "files": [
     "app/main.cjs", "app/preload.cjs", "app/library.cjs", "app/security.cjs",
     "app/translation.cjs", "app/typing.mjs", "app/stream.mjs", "app/renderer.js",
+    "app/alignment.cjs", "app/alignment.mjs", "app/demo-alignment.cjs", "app/practice.cjs",
     "app/index.html", "app/styles.css", "package.json", "使用说明.md"
   ],
   "artifactName": "NovelType-${version}-win-${arch}.${ext}",

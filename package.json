@@ -1,7 +1,7 @@
 {
   "name": "noveltype",
   "productName": "NovelType",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Read stories. Type English. A private desktop novel typing tutor.",
   "main": "app/main.cjs",
   "author": "Xavier",
@@ -20,7 +20,7 @@
     "package": "electron-builder --win --x64 --dir --publish never",
     "dist": "electron-builder --win --x64 --publish never",
     "verify:release": "node scripts/release-integrity.cjs",
-    "test:desktop": "node -e \"require('node:fs').mkdirSync('evidence',{recursive:true})\" && node test/continuous-smoke.cjs",
+    "test:desktop": "node -e \"require('node:fs').mkdirSync('evidence',{recursive:true})\" && node test/continuous-smoke.cjs && node test/alignment-smoke.cjs",
     "test:performance": "node test/performance-smoke.cjs"
   },
   "devDependencies": {
