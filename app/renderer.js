@@ -1,8 +1,10 @@
 import { TypingSession, charactersMatch } from './typing.mjs';
 import { initialRange, extendRange, nextPosition } from './stream.mjs';
 import { alignmentAtCursor, targetOffset } from './alignment.mjs';
+import { createGamesUI } from './games-ui.mjs';
 const $=id=>document.getElementById(id);
 const api=window.novel;
+let gamesUI,activeView='reading',viewBusy=false;
 const presets={glm:{label:'智谱 GLM',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4.7-flash'},deepseek:{label:'DeepSeek',baseUrl:'https://api.deepseek.com',model:'deepseek-flash'},openai:{label:'OpenAI',baseUrl:'https://api.openai.com/v1',model:'gpt-4o-mini'},custom:{label:'自定义服务',baseUrl:'',model:''}};
 let state={books:[],activeBookId:null,settings:{}};
 let session=null,busy=false,explicitPause=false,settingsBusy=false,editContext=null;
@@ -214,11 +216,11 @@ async function startPractice(){
   if(session?.complete)advanceCompleted();renderControls();revealInput();void ensureTranslations();
 }
 async function runStateAction(action,successMessage=''){
-  if(busy)return;stopContinuous();busy=true;renderControls();renderLibrary();try{await flushSave();const result=await action();if(result){normalizeState(result);renderLibrary();renderPassage();if(successMessage)notice(successMessage);}}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();}
+  if(busy)return;if(activeView!=='reading'&&!(await switchView('reading')))return;stopContinuous();busy=true;renderControls();renderLibrary();try{await flushSave();const result=await action();if(result){normalizeState(result);renderLibrary();renderPassage();if(successMessage)notice(successMessage);}}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();}
 }
-async function selectBook(id){if(id!==state.activeBookId)await runStateAction(()=>api.selectBook(id));}
+async function selectBook(id){if(activeView!=='reading'&&!(await switchView('reading')))return;if(id!==state.activeBookId)await runStateAction(()=>api.selectBook(id));}
 async function chooseParagraph(position){const book=currentBook();if(!book||busy)return;if(position===book.position){revealInput();return;}stopContinuous();busy=true;renderControls();try{await flushSave();const saved=await api.saveProgress({bookId:book.id,position,draft:''});if(saved.bookId!==book.id)throw new Error('进度保存响应不一致，请重试。');book.position=saved.position;book.draft=saved.draft;book.stats=saved.stats;book.completed=[...new Set([...book.completed,...saved.completed])].sort((a,b)=>a-b);explicitPause=false;session=new TypingSession(currentSegment().translation||'',book.draft);liveTotals={characters:0,seconds:0,attempts:0,errors:0};mountActive({focus:true,scroll:true});notice('');}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();if(!explicitPause&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}}
-function pauseForDialog(){stopContinuous();explicitPause=true;renderControls();}
+function pauseForDialog(){stopContinuous();gamesUI?.pause();explicitPause=true;renderControls();}
 function lockImportDialog(id,locked){for(const control of $(id).querySelectorAll('button,input,textarea'))control.disabled=locked;$(id).dataset.saving=String(locked);}
 function openSettings(message=''){pauseForDialog();$('provider').value=state.settings.provider||'glm';$('base-url').value=state.settings.baseUrl||presets.glm.baseUrl;$('model').value=state.settings.model||presets.glm.model;$('api-key').value='';$('clear-key').checked=false;updateKeyHelp();formMessage('settings-message',message);$('settings-dialog').showModal();}
 function updateKeyHelp(){const changed=$('provider').value!==state.settings.provider;$('key-status').textContent=state.settings.hasKey&&!changed?'（已保存，留空保留）':'（尚未设置）';$('api-key').placeholder=state.settings.hasKey&&!changed?'留空保留已保存的 Key':'输入此服务商的 API Key';$('key-help').textContent=$('provider').value==='glm'?'使用智谱「标准 API Key」，Coding Plan 套餐 Key 不通用。API Key 仅在本机加密保存。':'密钥由 Windows 加密保存在本机，不包含在导出备份中。更换服务商时需重新输入。';}
@@ -241,11 +243,12 @@ $('translate').addEventListener('click',startPractice);
 $('return-to-input').addEventListener('click',()=>revealInput());
 $('reset').addEventListener('click',()=>{const book=currentBook();if(!book)return;stopContinuous();book.draft='';explicitPause=false;session=new TypingSession(currentSegment().translation||'');mountActive({focus:true});scheduleSave();});
 for(const id of ['import-file','empty-import'])$(id).addEventListener('click',()=>runStateAction(()=>api.importFile(),'小说已加入长卷。开始连续练习后，会按顺序翻译并接续。'));
-const observer=new IntersectionObserver(entries=>{for(const entry of entries){if(entry.isIntersecting)loadMore(entry.target.id==='stream-top'?-1:1);}},{rootMargin:'600px 0px'});
+const observer=new IntersectionObserver(entries=>{if(activeView!=='reading')return;for(const entry of entries){if(entry.isIntersecting)loadMore(entry.target.id==='stream-top'?-1:1);}},{rootMargin:'600px 0px'});
 observer.observe($('stream-top'));observer.observe($('stream-bottom'));
 
 
-$('open-paste').addEventListener('click', () => {
+$('open-paste').addEventListener('click', async () => {
+  if(activeView!=='reading'&&!(await switchView('reading')))return;
   pauseForDialog();
   formMessage('paste-message', '');
   $('paste-dialog').showModal();
@@ -380,10 +383,45 @@ $('open-folder').addEventListener('click', async () => {
 
 api?.onBeforeClose?.(async () => {
   stopContinuous();
+  gamesUI?.pause();
   session?.pause(now());
   await flushSave();
+  await gamesUI?.flush();
 });
 setInterval(renderMetrics, 500);
+
+async function switchView(view){
+  if(viewBusy||busy)return false;
+  viewBusy=true;
+  try{
+    gamesUI?.pause();stopContinuous();explicitPause=true;renderControls();
+    await flushSave();await gamesUI?.flush();
+    if(view==='reading')await gamesUI?.close();
+    activeView=view;
+    $('reading-area').hidden=view!=='reading';$('games-view').hidden=view==='reading';
+    document.body.dataset.view=view;
+    for(const name of ['reading','games','map'])$('nav-'+name).setAttribute('aria-current',name===view?'page':'false');
+    $('view-title').textContent={reading:'阅读与练习',games:'打字游戏',map:'故事闯关'}[view];
+    $('font-toggle').hidden=view!=='reading';notice('');window.scrollTo(0,0);
+    if(view!=='reading')await gamesUI.open({bookId:state.activeBookId,view});
+    return true;
+  }catch(error){notice(errorText(error),true);return false;}
+  finally{viewBusy=false;}
+}
+gamesUI=createGamesUI({root:$('games-view'),api,onRead:()=>switchView('reading'),onViewChange:view=>{
+  if(activeView==='reading')return;
+  activeView=view;document.body.dataset.view=view;
+  for(const name of ['reading','games','map'])$('nav-'+name).setAttribute('aria-current',name===view?'page':'false');
+  $('view-title').textContent=view==='map'?'故事闯关':'打字游戏';
+}});
+for(const view of ['reading','games','map'])$('nav-'+view).addEventListener('click',()=>switchView(view));
+function preference(key,fallback){try{return localStorage.getItem(key)||fallback;}catch{return fallback;}}
+function storePreference(key,value){try{localStorage.setItem(key,value);}catch{/* Appearance remains usable if browser storage is unavailable. */}}
+document.body.dataset.theme=preference('noveltype-theme',matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+document.body.dataset.font=['normal','large','largest'].includes(preference('noveltype-font','normal'))?preference('noveltype-font','normal'):'normal';
+$('theme-toggle').addEventListener('click',()=>{document.body.dataset.theme=document.body.dataset.theme==='dark'?'light':'dark';storePreference('noveltype-theme',document.body.dataset.theme);});
+$('font-toggle').addEventListener('click',()=>{const sizes=['normal','large','largest'];document.body.dataset.font=sizes[(sizes.indexOf(document.body.dataset.font)+1)%3];storePreference('noveltype-font',document.body.dataset.font);});
+$('focus-toggle').addEventListener('click',()=>{const focus=document.body.classList.toggle('focus-mode');$('focus-toggle').setAttribute('aria-pressed',String(focus));$('focus-toggle').textContent=focus?'退出专注':'专注';});
 
 async function initialize() {
   try {
