@@ -1,5 +1,6 @@
 import { TypingSession, charactersMatch } from './typing.mjs';
 import { initialRange, extendRange, nextPosition } from './stream.mjs';
+import { setupAccount } from './account-ui.mjs';
 import { alignmentAtCursor, targetOffset } from './alignment.mjs';
 import { createGamesUI } from './games-ui.mjs';
 const $=id=>document.getElementById(id);
@@ -9,6 +10,7 @@ const presets={glm:{label:'智谱 GLM',baseUrl:'https://open.bigmodel.cn/api/paa
 let state={books:[],activeBookId:null,settings:{}};
 let session=null,busy=false,explicitPause=false,settingsBusy=false,editContext=null;
 let continuousEnabled=false,translationTask=null,translationIndex=null,translationBookId=null,translationEpoch=0;
+let manualTranslationRetry=false;
 let saveTimer,savePromise=null,saveFailure=false,movingInput=false,range={start:0,end:0};
 let liveTotals={characters:0,seconds:0,attempts:0,errors:0};
 const savePending=[];
@@ -66,7 +68,7 @@ function renderSourceGuide(){
 }
 function notice(message,error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error);$('notice').hidden=!message;}
 function formMessage(id,message,error=false){$(id).textContent=message;$(id).classList.toggle('error',error);}
-function normalizeState(next){state=next;if(!state.books.some(book=>book.id===state.activeBookId))state.activeBookId=state.books[0]?.id||null;}
+function normalizeState(next){state=next;const note=document.querySelector(".local-note");if(note){note.querySelector("strong").textContent=state.account?.connected?"故事，随账号同步":"故事，留在这台电脑";note.querySelector("p").textContent=state.account?.connected?"小说与进度在本机缓存，并同步到你的服务器。":"书库与进度保存在本机，开始练习后按需翻译相邻短段。";}if(!state.books.some(book=>book.id===state.activeBookId))state.activeBookId=state.books[0]?.id||null;}
 function stopContinuous(){continuousEnabled=false;translationEpoch++;session?.pause(now());}
 function saveError(error){saveFailure=true;stopContinuous();explicitPause=true;$('save-state').textContent='保存失败 · 待重试';notice('进度仍在等待保存：'+errorText(error)+' 点击继续可重试，请暂时不要关闭软件。',true);renderControls();}
 function progressSnapshot(){const book=currentBook();if(!book)return null;book.draft=session?.value??book.draft??'';return {bookId:book.id,position:book.position,draft:book.draft};}
@@ -202,7 +204,8 @@ async function ensureTranslations(){
       if(!state.settings.hasKey){stopContinuous();notice('翻译或中文词句对照需要 AI。请在左侧「翻译设置」保存 API Key，再点击开始连续练习；已有译文仍可直接练习。');return;}
       const source=book.segments[candidate].source,previousTranslation=book.segments[candidate].translation;
       translationIndex=candidate;translationBookId=bookId;renderControls();
-      const result=await api.preparePassage({bookId,index:candidate});const local=state.books.find(item=>item.id===bookId);if(!local||local.segments[candidate]?.source!==source||local.segments[candidate]?.translation!==previousTranslation)return;local.segments[candidate].translation=result.translation;
+      const retryFailed=manualTranslationRetry;manualTranslationRetry=false;
+      const result=await api.preparePassage({bookId,index:candidate,retryFailed});const local=state.books.find(item=>item.id===bookId);if(!local||local.segments[candidate]?.source!==source||local.segments[candidate]?.translation!==previousTranslation)return;local.segments[candidate].translation=result.translation;
       const entry=alignmentEntry(local,candidate);entry.alignment=result.alignment;entry.loaded=true;prepared=true;
       if(currentBook()?.id===bookId){updateParagraph(candidate);if(currentBook().position===candidate&&!session?.target){session=new TypingSession(result.translation,currentBook().draft||'');mountActive({focus:continuousEnabled&&epoch===translationEpoch&&!explicitPause});}else if(currentBook().position===candidate)renderTarget();}
     }catch(error){if(currentBook()?.id===bookId&&epoch===translationEpoch){stopContinuous();notice('翻译与中文对照已停止：'+errorText(error)+' 点击开始练习可手动重试。',true);}}
@@ -212,7 +215,7 @@ async function ensureTranslations(){
 async function startPractice(){
   if(busy||!currentBook())return;
   if(saveFailure){try{await flushSave();}catch(error){saveError(error);return;}}
-  explicitPause=false;continuousEnabled=true;translationEpoch++;notice('');
+  explicitPause=false;continuousEnabled=true;manualTranslationRetry=true;translationEpoch++;notice('');
   if(session?.complete)advanceCompleted();renderControls();revealInput();void ensureTranslations();
 }
 async function runStateAction(action,successMessage=''){
@@ -223,7 +226,7 @@ async function chooseParagraph(position){const book=currentBook();if(!book||busy
 function pauseForDialog(){stopContinuous();gamesUI?.pause();explicitPause=true;renderControls();}
 function lockImportDialog(id,locked){for(const control of $(id).querySelectorAll('button,input,textarea'))control.disabled=locked;$(id).dataset.saving=String(locked);}
 function openSettings(message=''){pauseForDialog();$('provider').value=state.settings.provider||'glm';$('base-url').value=state.settings.baseUrl||presets.glm.baseUrl;$('model').value=state.settings.model||presets.glm.model;$('api-key').value='';$('clear-key').checked=false;updateKeyHelp();formMessage('settings-message',message);$('settings-dialog').showModal();}
-function updateKeyHelp(){const changed=$('provider').value!==state.settings.provider;$('key-status').textContent=state.settings.hasKey&&!changed?'（已保存，留空保留）':'（尚未设置）';$('api-key').placeholder=state.settings.hasKey&&!changed?'留空保留已保存的 Key':'输入此服务商的 API Key';$('key-help').textContent=$('provider').value==='glm'?'使用智谱「标准 API Key」，Coding Plan 套餐 Key 不通用。API Key 仅在本机加密保存。':'密钥由 Windows 加密保存在本机，不包含在导出备份中。更换服务商时需重新输入。';}
+function updateKeyHelp(){if(state.account?.connected){$("key-status").textContent=state.settings.hasKey?"（服务器已保存，留空保留）":"（服务器尚未设置）";$("api-key").placeholder="留空保留服务器上的 Key";$("key-help").textContent="API Key 加密保存在你的服务器，同一账号的其他电脑自动共用。更换接口需重新填写 Key。";return;}const changed=$('provider').value!==state.settings.provider;$('key-status').textContent=state.settings.hasKey&&!changed?'（已保存，留空保留）':'（尚未设置）';$('api-key').placeholder=state.settings.hasKey&&!changed?'留空保留已保存的 Key':'输入此服务商的 API Key';$('key-help').textContent=$('provider').value==='glm'?'使用智谱「标准 API Key」，Coding Plan 套餐 Key 不通用。API Key 仅在本机加密保存。':'密钥由 Windows 加密保存在本机，不包含在导出备份中。更换服务商时需重新输入。';}
 $('typing-input').addEventListener('input',event=>{
   if(!session||busy||explicitPause||session.complete)return;
   if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||'')){$('typing-input').value=session.value;return;}
@@ -423,10 +426,20 @@ $('theme-toggle').addEventListener('click',()=>{document.body.dataset.theme=docu
 $('font-toggle').addEventListener('click',()=>{const sizes=['normal','large','largest'];document.body.dataset.font=sizes[(sizes.indexOf(document.body.dataset.font)+1)%3];storePreference('noveltype-font',document.body.dataset.font);});
 $('focus-toggle').addEventListener('click',()=>{const focus=document.body.classList.toggle('focus-mode');$('focus-toggle').setAttribute('aria-pressed',String(focus));$('focus-toggle').textContent=focus?'退出专注':'专注';});
 
+async function changeAccount(action){
+  if(busy)throw new Error('请等待当前操作完成。');
+  if(activeView!=='reading'&&!(await switchView('reading')))throw new Error('请先暂停游戏。');
+  stopContinuous();await flushSave();busy=true;renderControls();
+  try{normalizeState(await action());renderLibrary();renderPassage();}
+  catch(error){normalizeState(await api.getState());renderLibrary();renderPassage();throw error;}
+  finally{busy=false;renderControls();}
+}
+setupAccount({api,changeAccount,beforeOpen:pauseForDialog,settingsChanged:value=>{state.settings=value;renderLibrary();}});
 async function initialize() {
   try {
     if (!api) throw new Error('请通过 NovelType 桌面应用打开此页面。');
     normalizeState(await api.getState());
+    if(state.account?.connected){$('save-state').textContent='正在同步账号…';try{normalizeState(await api.syncAccount());}catch(error){notice('当前使用本机缓存：'+errorText(error),true);}}
     renderLibrary();
     renderPassage();
     if (session?.complete && currentBook().position < currentBook().segments.length - 1) advanceCompleted();

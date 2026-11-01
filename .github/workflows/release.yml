@@ -72,7 +72,8 @@ jobs:
 
           - Installer: NovelType-Setup-$version-x64.exe
           - ZIP: extract the entire archive, then run NovelType.exe.
-          - Your books, progress and API Key stay on your own computer. Each user supplies their own API Key.
+          - Local mode keeps books and settings on your computer. Optional account mode syncs books, translations, typing and games through your configured server.
+          - Account mode keeps the provider API Key encrypted on the server; download packages never include credentials or private novels.
           - This build is unsigned. Windows or an organization's policy may prevent launch. Do not disable security controls to run it.
           - Updating preserves the data directory. Download updates from this repository's Releases page.
           "@

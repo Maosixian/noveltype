@@ -6,15 +6,17 @@ const {pathToFileURL}=require('node:url');
 const {Library}=require('./library.cjs');
 const {translateText,testConnection,validateSettings}=require('./translation.cjs');
 const {SettingsStore,decodeText}=require('./security.cjs');
-const {AlignmentCache}=require('./alignment.cjs');
+const {AlignmentCache,validateAlignment}=require('./alignment.cjs');
 const {getDemoAlignment}=require('./demo-alignment.cjs');
 const {preparePassage}=require('./practice.cjs');
 const {GameStore}=require('./game-store.cjs');
 const {GameContentRegistry}=require('./game-content.cjs');
+const {CloudWorkspace}=require('./cloud-workspace.cjs');
 const entry=path.join(__dirname,'index.html');
 const entryUrl=pathToFileURL(entry).href;
 let win,library,settings,alignmentCache,busy=false,closing=false,closePending=false,closeTimer;
 let gameStore;
+let cloud;
 const gameContentRegistry=new GameContentRegistry();
 const games=()=>gameStore||(gameStore=new GameStore(app.getPath('userData')));
 if(!app.isPackaged&&process.env.NOVELTYPE_TEST_DATA)app.setPath('userData',process.env.NOVELTYPE_TEST_DATA);
@@ -23,7 +25,9 @@ if(process.platform==='win32')app.setAppUserModelId('io.github.maosixian.novelty
 const lock=app.requestSingleInstanceLock();
 if(!lock)app.quit();
 app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus();}});
-const state=()=>library.getState(settings.public());
+const state=()=>({...library.getState(cloud?.connected()?cloud.settings:settings.public()),account:cloud?.status()});
+function accountReady(){if(busy||cloud.syncing)throw new Error('请等当前翻译或同步完成后再操作账号。');}
+function change(kind,key,fn){return cloud?.connected()?cloud.changed(kind,key,fn):fn();}
 function bind(name,fn){ipcMain.handle('novel:'+name,async(event,payload)=>{
   if(!win||event.sender!==win.webContents||event.senderFrame?.url!==entryUrl)return {ok:false,error:'不允许的操作来源。'};
   try{return {ok:true,value:await fn(payload)};}catch(error){return {ok:false,error: error.code&&/^E[A-Z]+$/.test(error.code)?'无法读写本机文件，请检查磁盘空间和文件权限。':(error.message||'操作失败，请重试。')};}
@@ -31,31 +35,50 @@ function bind(name,fn){ipcMain.handle('novel:'+name,async(event,payload)=>{
 function register(){
   ipcMain.on('novel:close-ready',(event,ok)=>{if(!win||event.sender!==win.webContents||event.senderFrame?.url!==entryUrl||!closePending)return;clearTimeout(closeTimer);closePending=false;if(ok){closing=true;win.close();}else{dialog.showMessageBox(win,{type:'error',message:'练习进度未能保存，请重试。',buttons:['返回软件']});}});
   bind('getState',state);
+  bind('getAccount',()=>cloud.status());
+  bind('login',async input=>{accountReady();busy=true;try{await cloud.login(input);return state();}finally{busy=false;}});
+  bind('logout',async()=>{accountReady();busy=true;try{await cloud.logout();return state();}finally{busy=false;}});
+  bind('syncAccount',async()=>{accountReady();busy=true;try{await cloud.sync({apply:true});return state();}finally{busy=false;}});
+  bind('resolveSync',async input=>{accountReady();busy=true;try{cloud.resolve(input);await cloud.sync({apply:true});return state();}finally{busy=false;}});
+  bind('uploadLocalSettings',async()=>{accountReady();if(!cloud.connected())throw new Error('请先登录账号。');busy=true;try{const value=await cloud.client.saveSettings({...settings.public(),apiKey:settings.key()});return cloud.savePublic(value);}finally{busy=false;}});
   bind('getGameData',({bookId}={})=>{const content=gameContentRegistry.issue(library.state,bookId);return {...content,progress:games().get(content.bookId)};});
   bind('saveGameResult',input=>{
     gameContentRegistry.validate(library.state,input);
-    return games().save(input);
+    return change('games',input.bookId,()=>games().save(input));
   });
-  bind('importText',input=>{library.importText(input);return state();});
-  bind('selectBook',id=>{library.selectBook(id);return state();});
-  bind('saveProgress',input=>library.saveProgress(input));
-  bind('setTranslation',input=>{library.setTranslation(input);return state();});
+  bind('importText',input=>{library.importText(input);if(cloud.connected())cloud.publishBook(library.state.activeBookId);return state();});
+  bind('selectBook',id=>{change('selection','active',()=>library.selectBook(id));return state();});
+  bind('saveProgress',input=>change('progress',input.bookId,()=>library.saveProgress(input)));
+  bind('setTranslation',input=>{change('chunk',`${input.bookId}:${Math.floor(input.index/128)}`,()=>library.setTranslation(input));return state();});
   bind('getAlignment',({bookId,index}={})=>{const segment=library.getSegment(bookId,index);return segment.translation?alignmentCache.get(segment.source,segment.translation):null;});
-  bind('preparePassage',async({bookId,index}={})=>{
+  bind('preparePassage',async({bookId,index,retryFailed=false}={})=>{
     if(busy)throw new Error('已有 AI 请求进行中，请稍候。');
     busy=true;
-    try{return await preparePassage({library,cache:alignmentCache,bookId,index,getCredentials:()=>({settings:settings.public(),apiKey:settings.key()}),fetchImpl:(url,options)=>net.fetch(url,options)});}
+    try{
+      if(cloud.connected()){
+        const before=library.getSegment(bookId,index),cached=before.translation&&alignmentCache.get(before.source,before.translation);
+        if(cached)return {translation:before.translation,alignment:cached,cached:true};
+        await cloud.sync();const result=await cloud.client.prepare({bookId,index,retryFailed:retryFailed===true});
+        const current=library.getSegment(bookId,index);
+        if(current.source!==before.source||current.translation!==before.translation||(before.translation&&before.translation!==result.translation))throw new Error('段落内容已变化，请同步后重试。');
+        validateAlignment(before.source,result.translation,result.alignment);
+        if(!before.translation)library.setTranslation({bookId,index,translation:result.translation});
+        alignmentCache.set(before.source,result.translation,result.alignment);return result;
+      }
+      return await preparePassage({library,cache:alignmentCache,bookId,index,getCredentials:()=>({settings:settings.public(),apiKey:settings.key()}),fetchImpl:(url,options)=>net.fetch(url,options)});
+    }
     finally{busy=false;}
   });
-  bind('saveSettings',input=>{if(busy)throw new Error('翻译进行中，请完成后再修改设置。');validateSettings(input);return settings.save(input);});
+  bind('saveSettings',async input=>{accountReady();validateSettings(input);busy=true;try{return cloud.connected()?cloud.savePublic(await cloud.client.saveSettings(input)):settings.save(input);}finally{busy=false;}});
   bind('importFile',async()=>{
     const pick=await dialog.showOpenDialog(win,{title:'导入中文小说',properties:['openFile'],filters:[{name:'TXT 文本',extensions:['txt']}]});
     if(pick.canceled)return null;
     const file=pick.filePaths[0];if(path.extname(file).toLowerCase()!=='.txt')throw new Error('第一版支持 TXT 文件，请先将小说另存为 TXT。');
     if(fs.statSync(file).size>10*1024*1024)throw new Error('请选择 10 MB 以内的 TXT 文件。');
-    library.importText({title:path.basename(file,path.extname(file)),text:decodeText(fs.readFileSync(file))});return state();
+    library.importText({title:path.basename(file,path.extname(file)),text:decodeText(fs.readFileSync(file))});if(cloud.connected())cloud.publishBook(library.state.activeBookId);return state();
   });
   bind('translate',async({bookId,index}={})=>{
+    if(cloud.connected())throw new Error('账号模式请使用开始连续练习，由服务器准备翻译和中文对照。');
     const segment=library.getSegment(bookId,index);
     if(segment.translation)return {translation:segment.translation,cached:true};
     if(busy)throw new Error('已有翻译请求进行中，请稍候。');
@@ -63,12 +86,13 @@ function register(){
     try {const translation=await translateText({source:segment.source,settings:settings.public(),apiKey,fetchImpl:(url,options)=>net.fetch(url,options)});const current=library.getSegment(bookId,index);if(current.source!==segment.source||current.translation)throw new Error('段落内容已更改，请重新打开当前段落。');library.setTranslation({bookId,index,translation});return {translation,cached:false};}
     finally{busy=false;}
   });
-  bind('testConnection',async()=>{if(busy)throw new Error('已有请求进行中，请稍候。');const apiKey=settings.key();busy=true;try{return await testConnection({settings:settings.public(),apiKey,fetchImpl:(url,options)=>net.fetch(url,options)});}finally{busy=false;}});
+  bind('testConnection',async()=>{if(busy)throw new Error('已有请求进行中，请稍候。');busy=true;try{return cloud.connected()?await cloud.client.testConnection():await testConnection({settings:settings.public(),apiKey:settings.key(),fetchImpl:(url,options)=>net.fetch(url,options)});}finally{busy=false;}});
   bind('exportBackup',async()=>{
     const pick=await dialog.showSaveDialog(win,{title:'导出书库备份（不含密钥）',defaultPath:'NovelType-backup.json',filters:[{name:'NovelType 备份',extensions:['json']}]});
     if(pick.canceled)return null;fs.writeFileSync(pick.filePath,JSON.stringify(library.exportData(),null,2),'utf8');return state();
   });
   bind('importBackup',async()=>{
+    if(cloud.connected())throw new Error('请先退出账号，在本机模式中恢复备份；云端数据不会被备份静默覆盖。');
     if(busy)throw new Error('请等翻译完成后再导入备份。');
     const pick=await dialog.showOpenDialog(win,{title:'恢复书库备份',properties:['openFile'],filters:[{name:'NovelType 备份',extensions:['json']}]});
     if(pick.canceled)return null;
@@ -78,13 +102,12 @@ function register(){
     if(confirm.response!==1)return null;
     fs.writeFileSync(path.join(app.getPath('userData'),'before-restore-'+Date.now()+'.json'),JSON.stringify(library.exportData()));library.importData(data);return state();
   });
-  bind('openDataFolder',async()=>{const error=await shell.openPath(app.getPath('userData'));if(error)throw new Error('无法打开数据目录。');});
+  bind('openDataFolder',async()=>{const error=await shell.openPath(cloud.directory());if(error)throw new Error('无法打开数据目录。');});
 }
 async function create(){
   try{
-    settings=new SettingsStore(app.getPath('userData'),safeStorage);library=new Library(app.getPath('userData'));
-    const diskCache=new AlignmentCache(app.getPath('userData'));
-    alignmentCache={get:(source,translation)=>diskCache.get(source,translation)||getDemoAlignment(source,translation),set:(...args)=>diskCache.set(...args)};
+    settings=new SettingsStore(app.getPath('userData'),safeStorage);
+    cloud=new CloudWorkspace({directory:app.getPath('userData'),cipher:safeStorage,fetchImpl:(url,options)=>net.fetch(url,options),onSwitch:(l,g,c)=>{library=l;gameStore=g;alignmentCache=c;}});cloud.open();
     register();
     session.defaultSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
     win=new BrowserWindow({width:1380,height:930,minWidth:880,minHeight:680,title:'NovelType · 逐页',backgroundColor:'#f5f5f7',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
@@ -98,6 +121,7 @@ async function create(){
       closeTimer=setTimeout(async()=>{closePending=false;const pick=await dialog.showMessageBox(win,{type:'warning',message:'保存进度没有及时响应。',detail:'返回软件可以继续等待；直接退出可能丢失最后输入的几个字符。',buttons:['返回软件','直接退出'],defaultId:0,cancelId:0});if(pick.response===1){closing=true;win.close();}},4000);
     });
     await win.loadFile(entry);
+    const syncTimer=setInterval(()=>{if(cloud.connected()&&!busy&&!cloud.syncing)void cloud.sync().catch(()=>{});},15000);syncTimer.unref();
   }catch{const result=await dialog.showMessageBox({type:'error',title:'NovelType 启动失败',message:'无法读取本机书库或设置，原数据已保留。',detail:'请先复制整个数据目录备份。请成套保留 library 开头的书库、备份和进度日志文件，不要只替换单个文件；可联系维护者检查或恢复已导出的完整书库。设置损坏时可将 settings.json 改名后重新输入 Key。\n数据目录：'+app.getPath('userData'),buttons:['退出','打开数据目录'],defaultId:0});if(result.response===1)await shell.openPath(app.getPath('userData'));app.quit();}
 }
 if(lock)app.whenReady().then(create);

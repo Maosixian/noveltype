@@ -270,6 +270,12 @@ class Library {
       const next = { position: record.position, draft: record.draft, completed, stats: clone(record.stats) };
       delta = jsonBytes(next) - jsonBytes(progressFields(book));
       apply = () => Object.assign(book, next);
+    } else if (record.type === 'synced-progress') {
+      if (!exactKeys(record, ['type','bookId','position','draft','completed','stats']) || !validText(record.draft,MAX_TRANSLATION) || !validStats(record.stats) || !Array.isArray(record.completed) || record.completed.length>book.segments.length || new Set(record.completed).size!==record.completed.length) throw new Error('云端进度格式不正确。');
+      this._index(book,record.position);
+      for (const index of record.completed) { this._index(book,index); if (!book.segments[index].translation) throw new Error('云端完成记录缺少译文。'); }
+      const next={position:record.position,draft:record.draft,completed:[...record.completed].sort((a,b)=>a-b),stats:clone(record.stats)};
+      delta=jsonBytes(next)-jsonBytes(progressFields(book));apply=()=>Object.assign(book,next);
     } else if (record.type === 'translation') {
       if (!exactKeys(record, ['type', 'bookId', 'index', 'translation', 'clearDraft']) || !validText(record.translation, MAX_TRANSLATION, false) || typeof record.clearDraft !== 'boolean') throw new Error('译文日志格式不正确。');
       this._index(book, record.index);
@@ -388,6 +394,11 @@ class Library {
   getSegment(bookId, index) {
     const book = this._book(bookId); this._index(book, index);
     return clone(book.segments[index]);
+  }
+  applySyncedProgress(input) {
+    this._assertWritable();
+    this._change({type:'synced-progress',bookId:input.bookId,position:input.position,draft:input.draft,completed:input.completed,stats:input.stats});
+    return this._progressResult(this._book(input.bookId));
   }
   exportData() { return clone(this.state); }
   importData(data) { this._assertWritable(); return this._commit(validateData(data)); }
