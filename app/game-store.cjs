@@ -41,6 +41,13 @@ class GameStore{
     }catch{throw new Error('游戏记录无法读取，原文件已保留；阅读书库不受影响。请备份数据目录后联系维护者。');}
   }
   get(bookId){if(!safeId(bookId))throw new Error('书籍标识无效。');return clone(Object.hasOwn(this.data.books,bookId)?this.data.books[bookId]:empty());}
+  importProgress(bookId,progress){
+    if(!safeId(bookId)||['__proto__','constructor','prototype'].includes(bookId))throw new Error('书籍标识无效。');
+    const next=clone(this.data);Object.defineProperty(next.books,bookId,{value:clone(progress),writable:true,enumerable:true,configurable:true});validateData(next);
+    fs.mkdirSync(path.dirname(this.file),{recursive:true});const temp=this.file+'.sync.tmp';let fd;
+    try{fd=fs.openSync(temp,'w',0o600);fs.writeFileSync(fd,JSON.stringify(next));fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;fs.renameSync(temp,this.file);this.data=next;}finally{if(fd!==undefined)fs.closeSync(fd);if(fs.existsSync(temp))fs.unlinkSync(temp);}
+    return this.get(bookId);
+  }
   save(input){
     const result=validateResult(input);
     if(this.data.seen.includes(result.runId))return this.get(result.bookId);

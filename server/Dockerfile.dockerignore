@@ -1,0 +1,8 @@
+**
+!server/
+!server/*.cjs
+!server/Dockerfile
+!app/
+!app/translation.cjs
+!app/alignment.cjs
+!app/demo-alignment.cjs

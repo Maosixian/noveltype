@@ -11,6 +11,7 @@
     "app/alignment.cjs", "app/alignment.mjs", "app/demo-alignment.cjs", "app/practice.cjs",
     "app/games.mjs", "app/games-ui.mjs", "app/games.css", "app/game-content.cjs", "app/game-store.cjs", "app/appearance.css",
     "app/index.html", "app/styles.css", "package.json", "使用说明.md"
+    , "app/cloud-client.cjs", "app/cloud-library.cjs", "app/cloud-workspace.cjs", "app/account-ui.mjs"
   ],
   "artifactName": "NovelType-${version}-win-${arch}.${ext}",
   "publish": null,

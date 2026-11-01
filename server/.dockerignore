@@ -1,0 +1,10 @@
+*
+!server/
+!server/**
+!app/
+!app/translation.cjs
+!app/alignment.cjs
+!app/demo-alignment.cjs
+server/data/
+server/*.sqlite*
+server/*.env
