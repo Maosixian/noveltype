@@ -393,4 +393,4 @@ class Library {
   importData(data) { this._assertWritable(); return this._commit(validateData(data)); }
 }
 
-module.exports = { Library, chunkText, MAX_BOOK_BYTES, MAX_LIBRARY_BYTES };
+module.exports = { Library, chunkText, MAX_BOOK_BYTES, MAX_LIBRARY_BYTES, demoData };

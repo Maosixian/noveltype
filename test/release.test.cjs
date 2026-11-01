@@ -7,7 +7,7 @@ const config=require('../electron-builder.json');
 test('release contents reject user data, development files and unexpected files',()=>{
   const good=['/app','/app/main.cjs','/package.json'];
   assert.doesNotThrow(()=>assertAppEntries(good));
-  for(const extra of ['/settings.json','/app/settings.json','/library.json','/evidence/key.txt','/node_modules/dev/index.js','/app/unexpected.js']) {
+  for(const extra of ['/settings.json','/app/settings.json','/library.json','/games.json','/app/games.json.bak','/evidence/key.txt','/node_modules/dev/index.js','/app/unexpected.js']) {
     assert.throws(()=>assertAppEntries([...good,extra]),/Unexpected release entry/);
   }
 });

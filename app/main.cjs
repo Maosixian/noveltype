@@ -9,9 +9,14 @@ const {SettingsStore,decodeText}=require('./security.cjs');
 const {AlignmentCache}=require('./alignment.cjs');
 const {getDemoAlignment}=require('./demo-alignment.cjs');
 const {preparePassage}=require('./practice.cjs');
+const {GameStore}=require('./game-store.cjs');
+const {GameContentRegistry}=require('./game-content.cjs');
 const entry=path.join(__dirname,'index.html');
 const entryUrl=pathToFileURL(entry).href;
 let win,library,settings,alignmentCache,busy=false,closing=false,closePending=false,closeTimer;
+let gameStore;
+const gameContentRegistry=new GameContentRegistry();
+const games=()=>gameStore||(gameStore=new GameStore(app.getPath('userData')));
 if(!app.isPackaged&&process.env.NOVELTYPE_TEST_DATA)app.setPath('userData',process.env.NOVELTYPE_TEST_DATA);
 app.setName('NovelType');
 if(process.platform==='win32')app.setAppUserModelId('io.github.maosixian.noveltype');
@@ -26,6 +31,11 @@ function bind(name,fn){ipcMain.handle('novel:'+name,async(event,payload)=>{
 function register(){
   ipcMain.on('novel:close-ready',(event,ok)=>{if(!win||event.sender!==win.webContents||event.senderFrame?.url!==entryUrl||!closePending)return;clearTimeout(closeTimer);closePending=false;if(ok){closing=true;win.close();}else{dialog.showMessageBox(win,{type:'error',message:'练习进度未能保存，请重试。',buttons:['返回软件']});}});
   bind('getState',state);
+  bind('getGameData',({bookId}={})=>{const content=gameContentRegistry.issue(library.state,bookId);return {...content,progress:games().get(content.bookId)};});
+  bind('saveGameResult',input=>{
+    gameContentRegistry.validate(library.state,input);
+    return games().save(input);
+  });
   bind('importText',input=>{library.importText(input);return state();});
   bind('selectBook',id=>{library.selectBook(id);return state();});
   bind('saveProgress',input=>library.saveProgress(input));
@@ -77,7 +87,7 @@ async function create(){
     alignmentCache={get:(source,translation)=>diskCache.get(source,translation)||getDemoAlignment(source,translation),set:(...args)=>diskCache.set(...args)};
     register();
     session.defaultSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
-    win=new BrowserWindow({width:1380,height:930,minWidth:880,minHeight:680,title:'NovelType · 逐页',backgroundColor:'#f5f3ed',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+    win=new BrowserWindow({width:1380,height:930,minWidth:880,minHeight:680,title:'NovelType · 逐页',backgroundColor:'#f5f5f7',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
     win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     win.webContents.on('will-navigate',(event,url)=>{if(url!==entryUrl)event.preventDefault();});
     win.on('close',async event=>{
