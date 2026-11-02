@@ -51,7 +51,7 @@ const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;delete env.NOVELTYPE_
   const target=await page.locator('#game-race-text').textContent();
   await page.locator('#game-start').click();
   await page.locator('#game-input').pressSequentially(target.slice(0,2).toUpperCase(),{delay:20});
-  assert.equal(await page.locator('#game-race-text .is-wrong').count(),0);
+  assert.equal(await page.locator('#game-race-text .is-wrong').count(),0,JSON.stringify({target:target.slice(0,12),input:await page.locator('#game-input').inputValue()}));
   await page.locator('#game-pause').click();
   assert.equal(await page.locator('#game-input').isDisabled(),true);
   const pausedTime=await page.locator('#game-time').innerText();

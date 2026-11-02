@@ -11,19 +11,24 @@ class CloudWorkspace{
  constructor({directory,cipher,fetchImpl,onSwitch,allowHttpForTests=false}){
   this.root=directory;this.client=new CloudClient({directory:path.join(directory,'cloud-account'),cipher,fetchImpl,allowHttpForTests});this.onSwitch=onSwitch||(()=>{});this.error='';this.syncing=null;
  }
- connected(){return this.client.public().connected;}
+ connected(){return !!this.client.session;}
  directory(){return this.connected()?this.client.accountDirectory():this.root;}
  status(){const p=this.client.public();return {...p,error:this.error,conflictItems:p.connected?this.client.conflicts().map(({mutationId,kind,key})=>({mutationId,kind,key})):[]};}
  open(){
   const dir=this.directory();this.library=new Library(dir);this.games=new GameStore(dir);const disk=new AlignmentCache(dir);
   this.cache={get:(s,t)=>disk.get(s,t)||getDemoAlignment(s,t),set:(...args)=>disk.set(...args)};
   this.settingsFile=path.join(dir,'server-settings.json');this.settings=fs.existsSync(this.settingsFile)?JSON.parse(fs.readFileSync(this.settingsFile,'utf8')):{provider:'glm',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-5.3',hasKey:false};
+  // This index belongs to the opened Library, not the remote staging cache.
+  // Load it once per account so draft saves never parse the whole sync history.
+  const appliedFile=path.join(dir,'cloud-applied.json');
+  this.appliedRevisions=fs.existsSync(appliedFile)?JSON.parse(fs.readFileSync(appliedFile,'utf8')):{};
   this.onSwitch(this.library,this.games,this.cache);this.recoverDirty();
  }
  savePublic(settings){const next={provider:settings.provider,baseUrl:settings.baseUrl,model:settings.model,hasKey:!!settings.hasKey};save(this.settingsFile,next);this.settings=next;return this.settings;}
  dirtyFile(){return path.join(this.directory(),'cloud-dirty.json');}
  appliedFile(){return path.join(this.directory(),'cloud-applied.json');}
- applied(){const file=this.appliedFile();return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};}
+ applied(){return this.appliedRevisions;}
+ saveApplied(revisions){save(this.appliedFile(),revisions);this.appliedRevisions=revisions;}
  enqueue(kind,key,value){return this.client.enqueue(kind,key,value,{baseRevision:this.applied()[`${kind}/${key}`]||0});}
  mark(kind,key){if(!this.connected())return;const file=this.dirtyFile(),rows=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):[];if(!rows.some(e=>e.kind===kind&&e.key===key)){rows.push({kind,key,baseRevision:this.applied()[`${kind}/${key}`]||0});save(file,rows);}}
  value(kind,key){
@@ -42,16 +47,16 @@ class CloudWorkspace{
   if(!this.connected())return this.status();if(this.syncing)return this.syncing;
   this.syncing=(async()=>{
    this.recoverDirty();let response,turns=0;const changed=new Map();
-   do{response=await this.client.sync(async incoming=>{if(incoming.accepted.length){const applied=this.applied();for(const e of incoming.accepted)applied[`${e.kind}/${e.key}`]=Math.max(applied[`${e.kind}/${e.key}`]||0,e.revision);save(this.appliedFile(),applied);}});for(const item of response.changes)changed.set(`${item.kind}/${item.key}`,item);if(++turns>3000)throw new Error('本轮同步内容较多，请再次同步。');}while(response.hasMore||this.client.outbox().some(op=>!op.dependsOn));
+   do{response=await this.client.sync(async incoming=>{if(incoming.accepted.length){const applied={...this.applied()};for(const e of incoming.accepted)applied[`${e.kind}/${e.key}`]=Math.max(applied[`${e.kind}/${e.key}`]||0,e.revision);this.saveApplied(applied);}});for(const item of response.changes)changed.set(`${item.kind}/${item.key}`,item);if(++turns>3000)throw new Error('本轮同步内容较多，请再次同步。');}while(response.hasMore||this.client.outbox().some(op=>!op.dependsOn));
    if(apply&&this.client.conflicts().length===0){
     const entities=this.client.entities(),books=entities.filter(e=>e.kind==='book');
     const newBook=books.some(e=>!this.library.state.books.some(b=>b.id===e.key));
     const appliedFile=this.appliedFile();
-    const applied=this.applied();
+    const applied={...this.applied()};
     const unseen=entities.filter(e=>(applied[`${e.kind}/${e.key}`]||0)<e.revision);
     if(newBook||!fs.existsSync(appliedFile))hydrateLibrary(this.library,this.games,this.cache,entities);else applyChanges(this.library,this.games,this.cache,unseen);
     for(const e of entities)applied[`${e.kind}/${e.key}`]=e.revision;
-    save(appliedFile,applied);
+    this.saveApplied(applied);
    }
    this.savePublic(await this.client.settings());this.error='';return this.status();
   })().catch(error=>{this.error=error.message;throw error;}).finally(()=>{this.syncing=null;});return this.syncing;

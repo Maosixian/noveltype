@@ -1,7 +1,7 @@
 {
   "name": "noveltype",
   "productName": "NovelType",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Read stories. Type English. A private desktop novel typing tutor.",
   "main": "app/main.cjs",
   "author": "Xavier",
@@ -20,8 +20,8 @@
     "package": "electron-builder --win --x64 --dir --publish never",
     "dist": "electron-builder --win --x64 --publish never",
     "verify:release": "node scripts/release-integrity.cjs",
-    "test:desktop": "node -e \"require('node:fs').mkdirSync('evidence',{recursive:true})\" && node test/continuous-smoke.cjs && node test/alignment-smoke.cjs && node test/games-smoke.cjs && node test/cloud-desktop-smoke.cjs",
-    "test:performance": "node test/performance-smoke.cjs"
+    "test:desktop": "node -e \"require('node:fs').mkdirSync('evidence',{recursive:true})\" && node test/continuous-smoke.cjs && node test/alignment-smoke.cjs && node test/games-smoke.cjs && node test/cloud-desktop-smoke.cjs && node test/arcade-render-smoke.cjs && node test/ui-production-smoke.cjs",
+    "test:performance": "node test/performance-smoke.cjs && node test/typing-latency-smoke.cjs"
   },
   "devDependencies": {
     "@electron/asar": "4.0.1",

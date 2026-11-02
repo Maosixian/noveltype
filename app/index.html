@@ -8,18 +8,23 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="appearance.css">
   <link rel="stylesheet" href="games.css">
+  <link rel="stylesheet" href="typing-feedback.css">
+  <script type="module" src="presentation.mjs"></script>
   <script type="module" src="renderer.js"></script>
 </head>
 <body>
   <a href="#typing-input" class="skip-link">跳到打字练习</a>
+  <header class="appbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Z"/><path d="M12 5v15"/></svg></span><strong>NovelType</strong><span class="brand-cn">逐页</span></div>
+    <nav class="app-navigation" aria-label="主要功能">
+      <button id="nav-games" class="nav-item">探索游戏</button>
+      <button id="nav-map" class="nav-item">远征地图</button>
+      <button id="nav-reading" class="nav-item" aria-current="page">阅读练习</button>
+    </nav>
+    <button id="open-appearance" class="appbar-action" aria-label="外观与动效" title="外观与动效"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 7h6m4 0h8M3 17h12m4 0h2"/><circle cx="11" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg><span>动效</span></button>
+  </header>
   <div class="app-shell">
     <aside class="sidebar" aria-label="书库">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">N</span><div><strong>NovelType</strong><span class="brand-cn">逐页 · 让故事成为练习</span></div></div>
-      <nav class="app-navigation" aria-label="主要功能">
-        <button id="nav-reading" class="nav-item" aria-current="page"><span aria-hidden="true">▤</span> 阅读</button>
-        <button id="nav-games" class="nav-item"><span aria-hidden="true">⌘</span> 游戏</button>
-        <button id="nav-map" class="nav-item"><span aria-hidden="true">◇</span> 闯关地图</button>
-      </nav>
       <div class="shelf-heading"><span class="eyebrow">我的书架</span><span id="book-count" class="count">0</span></div>
       <nav id="book-list" class="book-list" aria-label="已导入的小说"></nav>
       <div class="import-actions"><button id="import-file" class="button primary">＋ 导入 TXT 小说</button><button id="open-paste" class="button quiet">或粘贴一段文字</button></div>
@@ -32,7 +37,7 @@
     </aside>
 
     <main class="workspace">
-      <header class="topbar"><span id="view-title">阅读与练习</span><div class="topbar-tools"><span id="save-state" class="save-state" role="status">正在打开书库…</span><button id="theme-toggle" class="toolbar-button" aria-label="切换深浅色主题">◐</button><button id="font-toggle" class="toolbar-button" aria-label="调整阅读字号">Aa</button><button id="focus-toggle" class="toolbar-button" aria-pressed="false">专注</button></div></header>
+      <header class="topbar"><span id="view-title">阅读与练习</span><div class="topbar-tools"><span id="save-state" class="save-state" role="status">正在打开书库…</span><button id="theme-toggle" class="toolbar-button" aria-label="切换深浅色主题" title="切换深浅色主题">◐</button><button id="font-toggle" class="toolbar-button" aria-label="调整阅读字号" title="调整阅读字号">Aa</button><button id="focus-toggle" class="toolbar-button" aria-pressed="false">专注</button></div></header>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="games-view" hidden></div>
       <div id="reading-area">
@@ -46,7 +51,7 @@
             <div class="stream-actions"><button id="return-to-input" class="button text-button">回到输入处 ↓</button><button id="pause" class="button secondary" aria-pressed="false">Ⅱ 暂停</button><button id="translate" class="button primary">开始连续练习</button></div>
             <div class="stream-metrics" aria-label="本次练习统计"><span><b id="wpm">0</b> WPM</span><span><b id="accuracy">100</b>% 准确率</span><span id="elapsed">00:00</span><span id="session-note">打完自动接续；可随时上下滚动。</span></div>
           </div>
-          <p id="translation-disclosure" class="stream-disclosure">开始练习后准备英文和中文词句对照，提前缓存后面 3 小段；可随时暂停。滚动不请求 AI，API 可能计费。</p>
+          <p id="translation-disclosure" class="stream-disclosure">开始后按需准备中英对照，提前缓存后面 3 小段。可随时暂停；API 可能计费。</p>
           <div id="stream-top" class="stream-sentinel" aria-hidden="true"></div>
           <div id="story-stream" class="story-stream" aria-label="小说连续正文"></div>
           <div id="stream-bottom" class="stream-sentinel" aria-hidden="true"></div>
@@ -62,6 +67,14 @@
       </div>
     </main>
   </div>
+
+  <dialog id="appearance-dialog" aria-labelledby="appearance-title">
+    <div class="modal-heading"><div><h2 id="appearance-title">找到你的手感</h2><p class="modal-intro">即时响应，适合长时间练习。</p></div><button id="appearance-close" class="icon-button" aria-label="关闭">×</button></div>
+    <label for="motion-preference">打字与游戏动效</label>
+    <select id="motion-preference"><option value="full">标准 · 敲击、击破与通关反馈</option><option value="reduced">轻柔 · 保留状态，减少位移</option><option value="off">关闭 · 静态反馈</option></select>
+    <p class="field-help">动效不会延迟输入。阅读时反馈更轻，游戏里会有命中、连击和过关反馈。</p>
+    <p id="motion-system-note" class="privacy-note" hidden>系统已开启减少动态效果，这里会自动遵循。</p>
+  </dialog>
 
   <dialog id="paste-dialog" aria-labelledby="paste-title"><form id="paste-form"><div class="modal-heading"><div><p class="eyebrow">ADD A STORY</p><h2 id="paste-title">把故事放进书架</h2></div><button type="button" class="icon-button close-dialog" aria-label="关闭">×</button></div><label for="paste-name">书名</label><input id="paste-name" type="text" maxlength="120" required placeholder="给这个故事起个名字"><label for="paste-text">中文正文</label><textarea id="paste-text" rows="9" required placeholder="粘贴小说或一段中文文字…"></textarea><p class="field-help">导入后自动分成适合打字的小段落，原文仅保存在本机。</p><p id="paste-message" class="form-message" role="status"></p><div class="modal-actions"><button type="button" class="button secondary close-dialog">取消</button><button id="paste-submit" type="submit" class="button primary">加入书架</button></div></form></dialog>
 
