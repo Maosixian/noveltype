@@ -11,6 +11,8 @@ const {getDemoAlignment}=require('./demo-alignment.cjs');
 const {preparePassage}=require('./practice.cjs');
 const {GameStore}=require('./game-store.cjs');
 const {GameContentRegistry}=require('./game-content.cjs');
+const {saveRaceResult}=require('./race-results.cjs');
+const {saveReadingProgress}=require('./progress-save.cjs');
 const {CloudWorkspace}=require('./cloud-workspace.cjs');
 const entry=path.join(__dirname,'index.html');
 const entryUrl=pathToFileURL(entry).href;
@@ -42,13 +44,11 @@ function register(){
   bind('resolveSync',async input=>{accountReady();busy=true;try{cloud.resolve(input);await cloud.sync({apply:true});return state();}finally{busy=false;}});
   bind('uploadLocalSettings',async()=>{accountReady();if(!cloud.connected())throw new Error('请先登录账号。');busy=true;try{const value=await cloud.client.saveSettings({...settings.public(),apiKey:settings.key()});return cloud.savePublic(value);}finally{busy=false;}});
   bind('getGameData',({bookId}={})=>{const content=gameContentRegistry.issue(library.state,bookId);return {...content,progress:games().get(content.bookId)};});
-  bind('saveGameResult',input=>{
-    gameContentRegistry.validate(library.state,input);
-    return change('games',input.bookId,()=>games().save(input));
-  });
+  bind('getGamePassage',({bookId,index}={})=>gameContentRegistry.issuePassage(library.state,bookId,index));
+  bind('saveGameResult',input=>saveRaceResult({directory:cloud.directory(),library,games:games(),registry:gameContentRegistry,change,input}));
   bind('importText',input=>{library.importText(input);if(cloud.connected())cloud.publishBook(library.state.activeBookId);return state();});
   bind('selectBook',id=>{change('selection','active',()=>library.selectBook(id));return state();});
-  bind('saveProgress',input=>change('progress',input.bookId,()=>library.saveProgress(input)));
+  bind('saveProgress',input=>saveReadingProgress({library,cloud,input}));
   bind('setTranslation',input=>{change('chunk',`${input.bookId}:${Math.floor(input.index/128)}`,()=>library.setTranslation(input));return state();});
   bind('getAlignment',({bookId,index}={})=>{const segment=library.getSegment(bookId,index);return segment.translation?alignmentCache.get(segment.source,segment.translation):null;});
   bind('preparePassage',async({bookId,index,retryFailed=false}={})=>{

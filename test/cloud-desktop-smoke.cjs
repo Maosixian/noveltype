@@ -94,6 +94,18 @@ async function close(app){const event=app.waitForEvent('close');await app.evalua
       assert.equal((await b.page.evaluate(()=>window.novel.getGameData({bookId:'sample'}))).progress.levels['1'].stars,2);
       assert.equal(providerCalls,1);
     });
+    let raceProgress;
+    await check('a complete novel race updates reading and game progress through the account outbox',async()=>{
+      await b.page.locator('#nav-games').click();await b.page.locator('#game-race-open').click();
+      assert.equal(await b.page.locator('#game-race-text').textContent(),'We go.');
+      await b.page.locator('#game-start').click();await b.page.locator('#game-input').pressSequentially('wE GO.',{delay:35});
+      await b.page.waitForFunction(()=>document.querySelector('#game-save-status')?.textContent.includes('已保存'));
+      raceProgress=(await b.page.evaluate(()=>window.novel.getState())).books.find(book=>book.id===fixtureBook.id);
+      assert.equal(raceProgress.position,1);assert.equal(raceProgress.draft,'');assert.deepEqual(raceProgress.completed,[0]);assert.equal(raceProgress.stats.sessions,1);
+      await sync(b.page);assert.equal((await b.page.evaluate(()=>window.novel.getAccount())).pending,0);
+      assert.equal((await b.page.evaluate(id=>window.novel.getGameData({bookId:id}),fixtureBook.id)).progress.recent[0].won,true);
+      assert.equal(providerCalls,1);
+    });
     await check('logout restores device-local library and another account cannot see the previous account books',async()=>{
       await openAccount(b.page);await b.page.locator('#account-logout').click();await b.page.waitForFunction(()=>document.querySelector('#account-message').textContent.startsWith('已退出'));
       let s=await b.page.evaluate(()=>window.novel.getState());assert.equal(s.account.connected,false);assert.ok(!s.books.some(v=>v.id===fixtureBook.id));
@@ -101,6 +113,19 @@ async function close(app){const event=app.waitForEvent('close');await app.evalua
       assert.deepEqual(errors,[]);
     });
     await close(b.app);
+    const resumed=await launch(0,port);
+    await check('the first computer receives both the new race result and the next reading paragraph without restoring its old draft',async()=>{
+      await sync(resumed.page);
+      const state=await resumed.page.evaluate(()=>window.novel.getState()),book=state.books.find(book=>book.id===fixtureBook.id);
+      if(book.position!==1){const account=await resumed.page.evaluate(()=>window.novel.getAccount());console.error('Race sync diagnostic '+JSON.stringify({position:book.position,completed:book.completed,stats:book.stats,pending:account.pending,conflicts:account.conflicts?.map(({kind,key,currentRevision})=>({kind,key,currentRevision}))}));}
+      assert.equal(book.position,1);assert.equal(book.draft,'');assert.deepEqual(book.completed,[0]);assert.deepEqual(book.stats,raceProgress.stats);
+      assert.equal(await resumed.page.locator('.story-passage.is-active').getAttribute('data-index'),'1');
+      assert.equal(await resumed.page.locator('#typing-input').inputValue(),'');
+      const content=await resumed.page.evaluate(id=>window.novel.getGameData({bookId:id}),fixtureBook.id);
+      assert.equal(content.progress.recent[0].won,true);assert.ok(Object.keys(content.progress.bestRaces).length>0);
+      assert.equal(providerCalls,1);assert.deepEqual(errors,[]);
+    });
+    await close(resumed.app);
     fs.mkdirSync(path.join(root,'evidence'),{recursive:true});fs.writeFileSync(path.join(root,'evidence/cloud-desktop-tests.json'),JSON.stringify({checks,isolatedProfiles:2,providerCalls,errors,externalNetwork:false},null,2));
     console.log(JSON.stringify({passed:checks.length,providerCalls,isolatedProfiles:2}));
   }finally{

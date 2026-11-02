@@ -7,7 +7,7 @@ const {execFileSync}=require('node:child_process');
 const asar=require('@electron/asar');
 
 const appFiles=['main.cjs','preload.cjs','library.cjs','security.cjs','translation.cjs','typing.mjs','stream.mjs','renderer.js','index.html','styles.css','alignment.cjs','alignment.mjs','demo-alignment.cjs','practice.cjs','games.mjs','games-ui.mjs','games.css','game-content.cjs','game-store.cjs','appearance.css','cloud-client.cjs','cloud-library.cjs','cloud-workspace.cjs','account-ui.mjs'];
-appFiles.push('presentation.mjs','typing-feedback.mjs','typing-feedback.css','assets/arcade-world.png');
+appFiles.push('presentation.mjs','typing-feedback.mjs','typing-feedback.css','assets/arcade-world.png','race-results.cjs','progress-save.cjs');
 const allowed=new Set(['app','app/assets','package.json','使用说明.md',...appFiles.map(name=>'app/'+name)]);
 function assertAppEntries(entries){
   for(const entry of entries){

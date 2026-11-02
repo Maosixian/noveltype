@@ -6,8 +6,10 @@ now integrated with the real desktop library, account and game states.
 - A dark, compact global bar separates exploration, expedition and reading.
 - The game lobby and map share the original coastal world artwork. Reading uses
   a quiet light or dark surface, a restrained type scale and generous line spacing.
-- Keep the selected book and reading cursor stable across views; games use cached
-  content and independent persisted results. No new paid API work from presentation.
+- Keep the selected book stable across views. Selecting game material preserves the
+  reading cursor; finishing a complete paragraph race advances it after durable save.
+  Defense and short map challenges keep independent results. Untranslated paragraphs
+  require an explicit preparation action; browsing never starts paid API work.
 - Visual feedback is immediate and bounded: character/word acknowledgement,
   defense impacts and one completion sequence. No continuous decorative effects,
   sound by default, input delay or waiting for animation before progressing.

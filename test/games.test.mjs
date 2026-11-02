@@ -1,11 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWordPool, RaceSession, DefenseSession, LEVELS, isLevelUnlocked, levelStars } from '../app/games.mjs';
+import { buildWordPool, RaceSession, DefenseSession, LEVELS, isLevelUnlocked, levelStars, paragraphRaceTimeLimit } from '../app/games.mjs';
 import { demoData } from '../app/library.cjs';
 
 const passages = [{id:'p1',source:'旧书店里有一封信。',translation:"The old bookshop held a letter. Don't forget the well-lit room."}, {id:'p2',source:'信在这里。',translation:'LETTER, bookshop, river.'}];
 const words = buildWordPool(passages);
 const makeDefense = options => new DefenseSession({words,random:()=>0,duration:30,spawnEvery:1000,fallDuration:5000,target:3,...options});
+
+test('full paragraph races keep newlines and support a bounded one-hour round',()=>{
+  assert.equal(paragraphRaceTimeLimit('A short line.'),180);
+  assert.ok(paragraphRaceTimeLimit('a'.repeat(1000))>600);
+  assert.equal(paragraphRaceTimeLimit('a'.repeat(10000)),3600);
+  const target='A long paragraph.\n  Another line.';
+  const race=new RaceSession({text:target,timeLimit:3600});race.start(0);
+  assert.equal(race.update(601000).status,'running');
+  assert.equal(race.input(target.replace('\n',' '),602000).complete,false);
+  assert.equal(race.input(target.toUpperCase(),603000).status,'won');
+  assert.equal(race.snapshot(604000).value,target.toUpperCase());
+});
 
 test('word pool deduplicates while retaining hyphen/apostrophe boundaries and original context',()=>{
   assert.equal(words.filter(item=>item.word.toLowerCase()==='letter').length,1);
