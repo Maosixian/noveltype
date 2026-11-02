@@ -7,6 +7,7 @@ import { createTypingFeedback } from './typing-feedback.mjs';
 const $=id=>document.getElementById(id);
 const api=window.novel;
 let gamesUI,activeView='reading',viewBusy=false;
+let readingChangedInGame=false;
 const presets={glm:{label:'智谱 GLM',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4.7-flash'},deepseek:{label:'DeepSeek',baseUrl:'https://api.deepseek.com',model:'deepseek-flash'},openai:{label:'OpenAI',baseUrl:'https://api.openai.com/v1',model:'gpt-4o-mini'},custom:{label:'自定义服务',baseUrl:'',model:''}};
 let state={books:[],activeBookId:null,settings:{}};
 let session=null,busy=false,explicitPause=false,settingsBusy=false,editContext=null;
@@ -104,7 +105,7 @@ function queueSave(snapshot){
   if(!saveFailure)void drainSaves().catch(saveError);
 }
 function scheduleSave(){clearTimeout(saveTimer);setText($('save-state'),saveFailure?'保存失败 · 待重试':'等待保存…');saveTimer=setTimeout(()=>{saveTimer=null;queueSave(progressSnapshot());},400);}
-async function flushSave(){clearTimeout(saveTimer);saveTimer=null;queueSave(progressSnapshot());if(savePromise)await savePromise.catch(()=>{});if(savePending.length)await drainSaves();}
+async function flushSave(){clearTimeout(saveTimer);saveTimer=null;if(activeView==='reading')queueSave(progressSnapshot());if(savePromise)await savePromise.catch(()=>{});if(savePending.length)await drainSaves();}
 function renderLibrary(){
   $('book-count').textContent=String(state.books.length).padStart(2,'0');const fragment=document.createDocumentFragment();
   for(const book of state.books){const button=document.createElement('button');button.className='book-button';button.type='button';button.setAttribute('aria-current',String(book.id===state.activeBookId));button.disabled=busy;button.title=book.title;const spine=document.createElement('span');spine.className='book-spine';spine.setAttribute('aria-hidden','true');const info=document.createElement('span');info.className='book-info';const title=document.createElement('strong');title.textContent=book.title;const meta=document.createElement('small');meta.textContent=`${book.demo?'示例 · ':''}${book.completed.length} / ${book.segments.length} 段已完成`;info.append(title,meta);button.append(spine,info);button.addEventListener('click',()=>selectBook(book.id));fragment.append(button);}
@@ -126,13 +127,14 @@ function renderControls(){
   $('book-finished').hidden=!finished;
   $('session-note').textContent=explicitPause?'已暂停；不会再安排新翻译。':'打完自动接续；上下滚动不改变输入位置。';
   for(const id of ['import-file','empty-import','open-paste','export-backup','import-backup'])$(id).disabled=busy;
-  for(const row of rows.values())row.querySelector('.practice-here').disabled=busy;
+  for(const row of rows.values())for(const button of row.querySelectorAll('.practice-here,.race-here'))button.disabled=busy||viewBusy;
   renderSourceGuide();
 }
 function renderMetrics(){if(activeView!=='reading'||document.hidden)return;const snap=session?.snapshot(now());const seconds=liveTotals.seconds+(snap?.seconds||0),characters=liveTotals.characters+(snap?.characters||0),attempts=liveTotals.attempts+(snap?.attempts||0),errors=liveTotals.errors+(snap?.errors||0);setText($('wpm'),String(seconds>=1?Math.round(characters/5/(seconds/60)):0));setText($('accuracy'),String(attempts?Math.round((attempts-errors)/attempts*100):100));setText($('elapsed'),`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`);}
 function createParagraph(index){
   const book=currentBook(),segment=book.segments[index],row=document.createElement('article');row.className='story-passage';row.dataset.index=String(index);
   const heading=document.createElement('div');heading.className='story-passage-heading';const label=document.createElement('span');label.className='paragraph-number';label.textContent=String(index+1).padStart(3,'0');const status=document.createElement('span');status.className='paragraph-status';const select=document.createElement('button');select.type='button';select.className='practice-here button text-button';select.textContent='从这里练习';select.addEventListener('click',()=>chooseParagraph(index));heading.append(label,status,select);
+  const race=document.createElement('button');race.type='button';race.className='race-here button text-button';race.textContent='用此段竞速';race.addEventListener('click',()=>switchView('games',{index,mode:'race'}));heading.append(race);
   const source=document.createElement('p');source.className='stream-source';source.textContent=segment.source;
   const guide=document.createElement('p');guide.className='guide-status';guide.hidden=true;
   const english=document.createElement('p');english.className='stream-english';english.lang='en';row.append(heading,guide,source,english);rows.set(index,row);updateParagraph(index);return row;
@@ -409,7 +411,7 @@ api?.onBeforeClose?.(async () => {
 });
 setInterval(renderMetrics, 500);
 
-async function switchView(view){
+async function switchView(view,options={}){
   if(viewBusy||busy)return false;
   viewBusy=true;
   try{
@@ -422,12 +424,29 @@ async function switchView(view){
     for(const name of ['reading','games','map'])$('nav-'+name).setAttribute('aria-current',name===view?'page':'false');
     $('view-title').textContent={reading:'阅读与练习',games:'打字游戏',map:'故事闯关'}[view];
     $('font-toggle').hidden=view!=='reading';notice('');window.scrollTo(0,0);
-    if(view!=='reading')await gamesUI.open({bookId:state.activeBookId,view});
+    if(view!=='reading')await gamesUI.open({bookId:state.activeBookId,view,...options});
+    else if(readingChangedInGame){renderPassage();explicitPause=true;renderControls();readingChangedInGame=false;}
     return true;
   }catch(error){notice(errorText(error),true);return false;}
-  finally{viewBusy=false;}
+  finally{viewBusy=false;renderControls();}
 }
-gamesUI=createGamesUI({root:$('games-view'),api,onRead:()=>switchView('reading'),onViewChange:view=>{
+gamesUI=createGamesUI({root:$('games-view'),api,onRead:()=>switchView('reading'),onProgress:saved=>{
+  const book=state.books.find(item=>item.id===saved.bookId);if(!book)return;
+  book.position=saved.position;book.draft=saved.draft;book.completed=saved.completed;book.stats=saved.stats;
+  if(book.id===state.activeBookId){session=new TypingSession(book.segments[book.position].translation||'',book.draft||'');liveTotals={characters:0,seconds:0,attempts:0,errors:0};typingFeedback.reset();}
+  readingChangedInGame=true;renderLibrary();renderOverview();
+},onTranslation:({bookId,index,translation})=>{
+  const book=state.books.find(item=>item.id===bookId);if(!book?.segments[index])return;
+  book.segments[index].translation=translation;readingChangedInGame=true;
+  // Explicit game preparation may finish after the user has returned to reading.
+  // Install the cached target without resuming practice or making another request.
+  if(activeView==='reading'&&book.id===state.activeBookId){
+    updateParagraph(index);
+    if(index===book.position&&!session?.target){session=new TypingSession(translation,book.draft||'');mountActive({focus:false});}
+    else if(index===book.position)renderTarget();
+    readingChangedInGame=false;renderControls();
+  }
+},onViewChange:view=>{
   if(activeView==='reading')return;
   activeView=view;document.body.dataset.view=view;
   for(const name of ['reading','games','map'])$('nav-'+name).setAttribute('aria-current',name===view?'page':'false');

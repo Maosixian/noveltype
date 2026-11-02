@@ -1,4 +1,4 @@
-import {buildWordPool, RaceSession, DefenseSession, LEVELS, isLevelUnlocked, levelStars} from './games.mjs';
+import {buildWordPool, RaceSession, DefenseSession, LEVELS, isLevelUnlocked, levelStars, paragraphRaceTimeLimit} from './games.mjs';
 import {charactersMatch} from './typing.mjs';
 
 const terminal = state => ['won','lost','ended'].includes(state);
@@ -29,11 +29,13 @@ const icons = {
   map:['m3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2V5Z','M9 3v16m6-14v16'],
 };
 
-/** This controller owns only game DOM and bounded game results, never reading state. */
-export function createGamesUI({root, api, onRead, onViewChange}) {
+/** Game UI owns round state. Durable reading progress comes only from a validated full-race result. */
+export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTranslation}) {
   let data=null, requestedBookId=null, view='games', engine=null, mode=null, level=null, passage=null;
   let runId=null, raf=null, active=false, generation=0, finished=false, lastSnapshot=null;
   let pending=null, savePromise=null, saveError=null, origin='games', opponent='35';
+  let selected=null, selectionRevision=0, selectionBusy=false, preparing=false, prepareError=null, starting=false, readingStatus=null;
+  let raceObserver=null, raceLayout=null, interactionEpoch=0;
   const $ = id => root.querySelector('#'+id);
   const nodes = new Map();
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -58,7 +60,8 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     const animation=animate(burst,[{opacity:1,scale:'.5'},{opacity:.9,scale:'1.4',offset:.35},{opacity:0,scale:'1.9'}],{duration:360});
     animation?.finished.catch(()=>{}).finally(()=>burst.remove());
   }
-  function resetView(){clearEffects();hud.clear();stageObserver?.disconnect();stageObserver=null;root.replaceChildren();}
+  function invalidatePending(){interactionEpoch++;starting=false;selectionBusy=false;preparing=false;const control=$('game-start');if(control&&!engine)control.disabled=false;}
+  function resetView(){invalidatePending();clearEffects();hud.clear();stageObserver?.disconnect();stageObserver=null;raceObserver?.disconnect();raceObserver=null;raceLayout=null;root.replaceChildren();}
 
 
   function message(text, error=false) {
@@ -68,10 +71,11 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
   }
   function saveStatus() {
     const node=$('game-save-status'); if (!node) return;
-    node.textContent=saveError?'成绩尚未保存：'+(saveError.message||'本机写入失败。'):savePromise?'正在保存成绩…':pending?'等待保存成绩…':'成绩已保存到本机';
+    node.textContent=saveError?'成绩或阅读进度尚未保存：'+(saveError.message||'本机写入失败。'):savePromise?'正在保存本局结果…':pending?'等待保存本局结果…':'成绩已保存到本机';
     node.classList.toggle('is-error',Boolean(saveError));
     const retry=$('game-retry-save');if(retry)retry.hidden=!saveError;
-    const next=$('game-next');if(next)next.disabled=Boolean(pending||savePromise||saveError);
+    for(const id of ['game-next','game-next-paragraph']){const next=$(id);if(next)next.disabled=Boolean(pending||savePromise||saveError);}
+    if(!pending&&!savePromise&&!saveError&&readingStatus)node.textContent=readingStatus==='advanced'?'成绩与阅读进度已保存。':readingStatus==='context-changed'?'成绩已保存；阅读位置已在其他地方改变，保留当前阅读位置。':'成绩已保存；保留现有阅读位置。';
   }
   async function persist(retry=false) {
     if(savePromise)return savePromise;
@@ -80,37 +84,92 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     const payload=pending;
     saveError=null;
     savePromise=api.saveGameResult(payload).then(progress=>{
-      if(data?.bookId===payload.bookId)data.progress=progress;
+      if(data?.bookId===payload.bookId){const {readingProgress,readingStatus:status,...gameProgress}=progress;data.progress=gameProgress;readingStatus=status||null;if(readingProgress){if(selected)selected.position=readingProgress.position;onProgress?.(readingProgress);}}
       if(pending===payload)pending=null;
     }).catch(error=>{saveError=error;throw error;}).finally(()=>{savePromise=null;saveStatus();});
     saveStatus();return savePromise;
   }
   async function flush(){if(savePromise)await savePromise;if(pending)await persist();}
   function cancelFrame(){if(raf!==null)cancelAnimationFrame(raf);raf=null;}
-  function clearRun(){cancelFrame();clearEffects();stageObserver?.disconnect();stageObserver=null;engine=null;mode=null;level=null;passage=null;nodes.clear();lastRaceValue=null;raceChars=[];raceSpans=[];previousRaceChars=[];finished=false;}
+  function clearRun(){invalidatePending();cancelFrame();clearEffects();stageObserver?.disconnect();stageObserver=null;engine=null;mode=null;level=null;passage=null;nodes.clear();lastRaceValue=null;raceChars=[];raceSpans=[];previousRaceChars=[];finished=false;readingStatus=null;}
   async function navigate(fn) {
-    pause();
+    invalidatePending();pause();
     try{await flush();await fn();}catch(error){message('请先重试保存本局成绩，再离开游戏。'+(error.message||''),true);}
   }
   function header(title, detail) {
     const head=el('header','game-heading'),copy=el('div');copy.append(el('h1','',title),el('p','game-description',detail));head.append(copy);root.append(head);
   }
+  const selectedBook=()=>Boolean(selected&&data?.bookId!=='sample');
+  const sourcePassages=(short=false)=>selectedBook()?(selected.passage?[short?selected.excerpt:selected.passage].filter(Boolean):[]):(data?.passages||[]);
+  const fullRace=()=>mode==='race'&&!level&&selectedBook()&&passage?.full===true;
+  const roundTime=()=>level?.timeLimit||(fullRace()?paragraphRaceTimeLimit(passage.translation):180);
   function sourceStrip() {
     const strip=el('div','game-source-strip'),copy=el('div');
     copy.append(el('span','game-kicker','练习素材'),el('strong','',data.title));
-    strip.append(copy,el('span','game-source-count',`${data.passages.length} 段已缓存 · 离线游戏`));
+    strip.append(copy,el('span','game-source-count',selectedBook()?`第 ${selected.index+1} / ${selected.total} 段 · ${selected.pending?'尚未翻译':'本段英文已缓存'}`:`${data.passages.length} 段原创示例`));
     if(data.bookId!=='sample')strip.append(button('使用原创示例', 'game-use-sample',()=>navigate(()=>load('sample',view)),'game-link'));
     else if(requestedBookId&&requestedBookId!=='sample')strip.append(button('使用当前小说','game-use-book',()=>navigate(()=>load(requestedBookId,view)),'game-link'));
-    root.append(strip);
+    root.append(strip);if(selectedBook())root.append(paragraphPicker());
+  }
+  function paragraphPicker(){
+    const picker=el('div','game-paragraph-picker');
+    const label=el('label','','小说段落');label.htmlFor='game-paragraph-index';
+    const input=el('input');input.type='number';input.id='game-paragraph-index';input.min='1';input.max=String(selected.total);input.step='1';input.value=String(selected.index+1);input.setAttribute('aria-label',`选择小说段落，1 到 ${selected.total}`);
+    const load=()=>{const value=Number(input.value);if(!Number.isInteger(value)||value<1||value>selected.total){message(`请输入 1 到 ${selected.total} 之间的段号。`,true);return;}void chooseParagraph(value-1);};
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();load();}});
+    picker.append(label,input,el('span','game-paragraph-total',`/ ${selected.total}`),button('跳转','game-paragraph-load',load),button('当前阅读段','game-paragraph-current',()=>void chooseParagraph(undefined),'game-link'));
+    const previous=button('上一段','game-paragraph-prev',()=>void chooseParagraph(selected.index-1),'game-link');previous.disabled=selected.index===0;
+    const next=button('下一段','game-paragraph-next',()=>void chooseParagraph(selected.index+1),'game-link');next.disabled=selected.index>=selected.total-1;
+    picker.append(previous,next);return picker;
+  }
+  function lockSelection(locked){
+    for(const node of root.querySelectorAll('.game-paragraph-picker button,.game-paragraph-picker input'))node.disabled=locked;
+    if(!locked&&selected){if($('game-paragraph-prev'))$('game-paragraph-prev').disabled=selected.index===0;if($('game-paragraph-next'))$('game-paragraph-next').disabled=selected.index>=selected.total-1;}
+  }
+  async function chooseParagraph(index){
+    if(selectionBusy||preparing||starting)return;
+    await navigate(async()=>{
+      const token=++selectionRevision,context=generation,epoch=interactionEpoch,nextMode=mode,nextLevel=level,screen=root.dataset.screen;
+      selectionBusy=true;lockSelection(true);
+      try{
+        const next=await api.getGamePassage({bookId:data.bookId,...(index===undefined?{}:{index})});
+        if(token!==selectionRevision||context!==generation||epoch!==interactionEpoch||!active)return;
+        selected=next;prepareError=null;clearRun();
+        if(screen==='arena'){mode=nextMode;level=nextLevel;selectPassage(0);renderArena();}else if(screen==='map')renderMap();else renderHome();
+      }catch(error){if(context===generation&&epoch===interactionEpoch)message('无法打开这一段：'+(error.message||''),true);}
+      finally{if(context===generation&&epoch===interactionEpoch){selectionBusy=false;if(!engine&&!preparing)lockSelection(false);}}
+    });
+  }
+  function renderPending(){
+    const card=el('section','game-empty game-pending');card.append(el('h2','',`第 ${selected.index+1} 段还没有英文`),el('p','game-pending-source',selected.source||'这一段尚未准备译文。'),el('p','','点击下方按钮后，只准备当前这一段。切换段落和打开游戏不会请求 AI。'));
+    const prepare=button(preparing?'正在准备本段…':prepareError?'重试准备本段译文':'准备本段译文','game-prepare',()=>void prepareSelected(),'game-button is-primary');prepare.disabled=preparing;
+    card.append(prepare);if(prepareError){const error=el('p','is-error',prepareError);error.setAttribute('role','status');card.append(error);}
+    root.append(card);
+  }
+  async function prepareSelected(){
+    if(preparing||selectionBusy||starting||!selectedBook())return;
+    const context=generation,epoch=interactionEpoch,index=selected.index,bookId=data.bookId,revision=selectionRevision,retryFailed=Boolean(prepareError);
+    preparing=true;prepareError=null;lockSelection(true);const control=$('game-prepare');if(control){control.disabled=true;control.textContent='正在准备本段…';}
+    try{
+      const result=await api.preparePassage({bookId,index,retryFailed});
+      onTranslation?.({bookId,index,translation:result.translation});
+      if(context!==generation||epoch!==interactionEpoch||revision!==selectionRevision||!active)return;
+      const refreshed=await api.getGamePassage({bookId,index});
+      if(context!==generation||epoch!==interactionEpoch||revision!==selectionRevision||!active)return;
+      selected=refreshed;
+      const screen=root.dataset.screen;preparing=false;
+      if(screen==='arena'){selectPassage(0);renderArena();}else if(screen==='map')renderMap();else renderHome();
+    }catch(error){if(context===generation&&epoch===interactionEpoch&&revision===selectionRevision){prepareError=error.message||'准备失败。没有自动重试。';const screen=root.dataset.screen;preparing=false;if(screen==='arena')renderArena();else if(screen==='map')renderMap();else renderHome();}}
+    finally{if(context===generation&&epoch===interactionEpoch){preparing=false;lockSelection(false);}}
   }
   function renderEmpty(){
     const block=el('section','game-empty');block.append(svg(icons.race),el('h2','','这本书还没有可用的英文素材'),el('p','','先回到阅读页翻译一小段，或立即用原创示例开始。打开游戏不会请求翻译。'));
     const actions=el('div','game-actions');actions.append(button('用原创示例开始','game-empty-sample',()=>navigate(()=>load('sample',view)),'game-button is-primary'),button('回到阅读','game-empty-read',()=>navigate(()=>onRead?.())));block.append(actions);root.append(block);
   }
   function renderHome(){
-    clearRun();view='games';onViewChange?.(view);resetView();root.dataset.screen='home';
+    clearRun();view='games';onViewChange?.(view);resetView();root.dataset.screen='home';root.dataset.paragraph=String(selectedBook());
     header('故事里的游乐场','沿着喜欢的文字，练出自己的节奏。');sourceStrip();
-    if(!data.passages.length){renderEmpty();return;}
+    if(!sourcePassages().length&&!selectedBook()){renderEmpty();return;}
     const stars=Object.values(data.progress.levels||{}).reduce((total,item)=>total+(item.stars||0),0);
     const hero=el('section','game-world-hero'),copy=el('div','game-world-copy');
     copy.append(el('span','game-world-label','故事远征 · 三章十二关'),el('h2','','下一程，\n向灯塔出发。'),el('p','','从晨光港湾到星夜灯塔，\n每一个敲下的词，都会让你更近一步。'),button(stars?'继续远征 →':'打开闯关地图 →','game-map-open',renderMap,'game-button is-primary'));
@@ -120,12 +179,12 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
       const tile=el('section','game-choice game-choice-'+item.mode),content=el('div');
       content.append(el('span','game-choice-label',item.tag),el('h2','',item.title),el('p','',item.detail),button(item.cta,'game-'+item.mode+'-open',()=>launch(item.mode,null),'game-link'));tile.append(content);choices.append(tile);
     }
-    root.append(choices,el('p','game-footnote','使用已有英文，游戏不请求 AI。大小写自由，成绩单独保存，不改变阅读位置。'));
+    root.append(choices,el('p','game-footnote',selectedBook()?'三个游戏都使用所选段落。完整段落竞速完成后保存阅读进度；防御与地图挑战只保存游戏成绩。':'原创示例可直接试玩。大小写自由，成绩单独保存。'));
   }
   function renderMap(){
     clearRun();view='map';onViewChange?.(view);resetView();root.dataset.screen='map';
     header('故事远征','十二站海岸旅程。完成一关，解锁下一段风景。');sourceStrip();
-    if(!data.passages.length){renderEmpty();return;}
+    if(!sourcePassages().length){selectedBook()?renderPending():renderEmpty();return;}
     const next=LEVELS.find(item=>!data.progress.levels?.[item.id]?.stars)||LEVELS[LEVELS.length-1];
     const wrap=el('div','game-map-scroll'),map=el('section','game-map-scene');map.setAttribute('aria-label','海岸闯关地图，可横向滚动');
     const caption=el('div','game-map-caption');caption.append(el('span','','当前目的地'),el('h2','',next.title),el('p','',`第 ${next.id} 关 · ${next.mode==='race'?'小说竞速':'单词防御'} · ${['晨光港湾','林间回声','星夜灯塔'][next.chapter-1]}`));map.append(caption);
@@ -141,10 +200,10 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     map.append(el('span','game-map-destination','星夜灯塔'));wrap.append(map);root.append(wrap);
     const legend=el('div','game-map-legend');legend.append(el('span','','晨光港湾 · 01—04'),el('span','','林间回声 · 05—08'),el('span','','星夜灯塔 · 09—12'));root.append(legend,button('← 返回游戏','game-home',renderHome,'game-link'),el('p','game-footnote','每本书分别保存星级。过关成绩保存成功后，下一关才会解锁。'));
   }
-  function selectPassage(index){passage=data.passages[Math.max(0,index)%data.passages.length];}
+  function selectPassage(index){const passages=sourcePassages(Boolean(level));passage=passages[Math.max(0,index)%passages.length]||null;}
   function launch(nextMode,nextLevel){
     void navigate(()=>{
-      origin=view;clearRun();mode=nextMode;level=nextLevel;finished=false;selectPassage(nextLevel?nextLevel.id-1:0);
+      origin=view;clearRun();mode=nextMode;level=nextLevel;finished=false;selectPassage(selectedBook()?0:nextLevel?nextLevel.id-1:0);
       renderArena();
     });
   }
@@ -153,8 +212,9 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     cancelFrame();resetView();root.dataset.screen='arena';root.dataset.mode=mode;nodes.clear();lastRaceValue=null;window.scrollTo({top:0,behavior:'instant'});
     const top=el('div','game-arena-top');top.append(button('← 返回'+(origin==='map'?'地图':'游戏'),'game-leave',()=>navigate(()=>origin==='map'?renderMap():renderHome()),'game-link'));
     top.append(el('h1','',level?`第 ${level.id} 关 · ${level.title}`:mode==='race'?'小说竞速':'单词防御战'));root.append(top);
-    const description=el('p','game-arena-description',level?level.mode==='race'?`在 ${level.timeLimit} 秒内完成原句，准确率至少 ${level.minAccuracy}%。`:`在 ${level.duration} 秒内击破 ${level.target} 个词，守住 3 次生命。`:mode==='race'?'完整输入目标句子。大小写自由，空格和标点需一致。':'60 秒内击破 12 个词。敲完整个词自动发射，漏过一个词扣除一次生命。');root.append(description);
-    if(mode==='race')renderRace();else renderDefense();
+    const description=el('p','game-arena-description',level?level.mode==='race'?`在 ${level.timeLimit} 秒内完成原句，准确率至少 ${level.minAccuracy}%。`:`在 ${level.duration} 秒内击破 ${level.target} 个词，守住 3 次生命。`:mode==='race'?fullRace()?`第 ${selected.index+1} 段完整竞速。完成后保存阅读进度，下一段接着练。大小写自由，标点、空格和换行需一致。`:'完整输入目标句子。大小写自由，空格和标点需一致。':'60 秒内击破 12 个词。敲完整个词自动发射，漏过一个词扣除一次生命。');root.append(description);
+    if(!passage){if(selectedBook()){root.append(paragraphPicker());if(selected.pending)renderPending();else message('这一段没有适合当前关卡的短句，请换一段或使用完整段落竞速。');}else renderEmpty();return;}
+    if(mode==='race')renderRace();else {if(selectedBook())root.append(paragraphPicker());renderDefense();}
     top.append(root.querySelector('.game-metrics'));
     const control=el('div','game-controls');
     control.append(button('开始这一局','game-start',start,'game-button is-primary'),button('暂停','game-pause',togglePause),button('结束','game-end',end));root.append(control);
@@ -162,11 +222,12 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     $('game-pause').disabled=true;$('game-end').disabled=true;
     const result=el('section','game-result');result.id='game-result';result.hidden=true;result.setAttribute('aria-live','polite');root.append(result);
     root.append(el('p','game-footnote',mode==='race'?'完成挑战得 1 星；准确率达到 95% 得 2 星；达到 98% 且领先陪练节奏得 3 星。':'完成目标得 1 星；剩余至少 2 次生命且准确率达到 85% 得 2 星；满生命且准确率达到 95% 得 3 星。'));
-    root.append(el('p','game-footnote','离开窗口或打开对话框会自动暂停。游戏全程使用本机缓存。'));
+    root.append(el('p','game-footnote','离开窗口或打开对话框会自动暂停。开始游戏后使用已经缓存的本段英文。'));
   }
   function renderRace(){
-    const config=el('div','game-race-config'+(level?' is-level':''));
-    if(!level){
+    const config=el('div','game-race-config'+(level?' is-level':selectedBook()?' is-full':''));
+    if(!level&&selectedBook())config.append(paragraphPicker());
+    if(!level&&!selectedBook()){
       const label=el('label','','练习段落');label.htmlFor='game-passage';const select=el('select');select.id='game-passage';
       data.passages.forEach((item,index)=>{const option=el('option','',`${index+1}. ${item.translation.slice(0,64)}`);option.value=String(index);select.append(option);});
       select.value=String(data.passages.indexOf(passage));
@@ -182,14 +243,18 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
       const row=el('div','game-track-row'),name=el('span','game-track-label',label);name.id='game-'+id+'-label';
       const track=el('div','game-track'),fill=el('div','game-track-fill'),car=el('span','game-racer');fill.id='game-'+id+'-fill';car.id='game-'+id+'-racer';car.setAttribute('aria-hidden','true');track.append(fill,car);const percent=el('span','game-track-percent','0%');percent.id='game-'+id+'-percent';row.append(name,track,percent);tracks.append(row);
     }
-    root.append(tracks);const stats=el('div','game-metrics');stats.append(metric('WPM','game-wpm','0'),metric('准确率','game-accuracy','100%'),metric('剩余秒','game-time',String(level?.timeLimit||180)));root.append(stats);
-    const card=el('section','game-race-reading'),source=el('p','game-source-context');source.id='game-race-source';const text=el('p','game-race-text');text.id='game-race-text';text.setAttribute('aria-label','竞速英文目标');card.append(source,text);
-    const labelInput=el('label','sr-only','输入竞速英文');labelInput.htmlFor='game-input';const input=el('textarea','game-input');input.rows=2;input.id='game-input';input.maxLength=4000;input.placeholder='点击开始后，从第一个字符输入…';input.disabled=true;configureInput(input);card.append(labelInput,input);root.append(card);renderRacePreview();updateGhostOption();
+    root.append(tracks);const stats=el('div','game-metrics');stats.append(metric('WPM','game-wpm','0'),metric('准确率','game-accuracy','100%'),metric('剩余秒','game-time',String(roundTime())));root.append(stats);
+    const card=el('section','game-race-reading'+(fullRace()?' is-full-paragraph':'')),source=el('p','game-source-context');source.id='game-race-source';const text=el('p','game-race-text');text.id='game-race-text';text.setAttribute('aria-label','竞速英文目标');card.append(source,text);
+    const labelInput=el('label','sr-only','输入竞速英文');labelInput.htmlFor='game-input';const input=el('textarea','game-input');input.rows=2;input.id='game-input';input.maxLength=10100;input.placeholder='点击开始后，从第一个字符输入…';input.disabled=true;configureInput(input);card.append(labelInput,input);root.append(card);renderRacePreview();updateGhostOption();
   }
   function renderRacePreview(){
     const target=$('game-race-text');if(!target)return;$('game-race-source').textContent=passage.source;
     raceChars=Array.from(passage.translation);raceSpans=raceChars.map(char=>el('span','',char));raceOverflow=el('span');previousRaceChars=[];lastRaceValue=null;
-    target.replaceChildren(...raceSpans,raceOverflow);
+    target.replaceChildren(...raceSpans,raceOverflow);target.scrollTop=0;
+    raceObserver?.disconnect();raceLayout=null;
+    if(fullRace()){
+      raceObserver=new ResizeObserver(()=>{raceLayout={tops:raceSpans.map(span=>span.offsetTop),height:target.clientHeight,lineHeight:parseFloat(getComputedStyle(target).lineHeight)};});raceObserver.observe(target);
+    }
   }
   function updateGhostOption(){const select=$('game-opponent'),option=select?.querySelector('[value="best"]');if(!option)return;option.disabled=!data.progress.bestRaces?.[passage.id];if(option.disabled&&select.value==='best'){select.value='35';opponent='35';}updateOpponentLabel();}
   function updateOpponentLabel(){if(!$('game-opponent-label'))return;const selected=$('game-opponent').value;$('game-opponent-label').textContent=selected==='best'?'个人最佳平均节奏':`电脑 · ${selected} WPM`;}
@@ -205,7 +270,10 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     input.lang='en';input.spellcheck=false;input.autocomplete='off';input.setAttribute('autocapitalize','off');input.setAttribute('autocorrect','off');
     for(const event of ['paste','drop'])input.addEventListener(event,e=>e.preventDefault());
     input.addEventListener('beforeinput',event=>{if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||''))event.preventDefault();});
-    input.addEventListener('keydown',event=>{if(event.key==='Enter')event.preventDefault();});
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Enter'&&!fullRace())event.preventDefault();
+      if(event.key==='Tab'&&fullRace()&&passage.translation.includes('\t')&&!event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey){event.preventDefault();input.setRangeText('\t',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:'\t',bubbles:true}));}
+    });
     input.addEventListener('input',event=>{
       if(!engine||lastSnapshot?.status!=='running')return;
       if(event.isComposing)return;
@@ -218,22 +286,33 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
       else if(mode==='race'&&snapshot.value.length>previous.value.length)impact($('game-you-racer'));
     });
   }
-  function start(){
-    if(engine||savePromise||pending)return;
-    let options;
-    if(mode==='race'){
-      const selected=$('game-opponent').value,best=data.progress.bestRaces?.[passage.id];
-      options={text:passage.translation,opponentWpm:selected==='best'?(best?.wpm||35):Number(selected),timeLimit:level?.timeLimit||180,minAccuracy:level?.minAccuracy||0};engine=new RaceSession(options);
-    }else{
-      options={words:buildWordPool(data.passages),...(level||{}),duration:level?.duration||60,target:level?.target||12};
-      if(!options.words.length){message('这些译文里没有可用于防御战的英文单词。可以切换到原创示例。',true);return;}engine=new DefenseSession(options);
-    }
-    runId=crypto.randomUUID();finished=false;$('game-start').hidden=true;$('game-pause').disabled=false;$('game-end').disabled=false;
-    for(const select of root.querySelectorAll('select'))select.disabled=true;
-    update(engine.start(clock()));$('game-input').focus();scheduleFrame();
+  async function start(){
+    if(engine||savePromise||pending||starting||selectionBusy||preparing||!passage)return;
+    starting=true;const context=generation,epoch=interactionEpoch,startButton=$('game-start'),index=selected?.index,bookId=data.bookId;startButton.disabled=true;
+    try{
+      if(fullRace()){
+        const fresh=await api.getGamePassage({bookId,index});
+        if(context!==generation||epoch!==interactionEpoch||$('game-start')!==startButton||!active||selected?.index!==index)return;
+        if(!fresh.passage||fresh.passage.translation!==passage.translation||fresh.passage.source!==passage.source){selected=fresh;selectPassage(0);renderArena();message('本段内容已更新，请确认后重新开始。');return;}
+        selected=fresh;passage=fresh.passage;
+      }
+      let options;
+      if(mode==='race'){
+        const selectedOpponent=$('game-opponent').value,best=data.progress.bestRaces?.[passage.id];
+        options={text:passage.translation,opponentWpm:selectedOpponent==='best'?(best?.wpm||35):Number(selectedOpponent),timeLimit:roundTime(),minAccuracy:level?.minAccuracy||0};engine=new RaceSession(options);
+      }else{
+        options={words:buildWordPool(sourcePassages()),...(level||{}),duration:level?.duration||60,target:level?.target||12};
+        if(!options.words.length){message('这一段没有可用于防御战的英文单词。请选择另一段，或使用原创示例。',true);return;}engine=new DefenseSession(options);
+      }
+      runId=crypto.randomUUID();finished=false;readingStatus=null;$('game-start').hidden=true;$('game-pause').disabled=false;$('game-end').disabled=false;
+      for(const select of root.querySelectorAll('select'))select.disabled=true;lockSelection(true);
+      update(engine.start(clock()));$('game-input').focus();scheduleFrame();
+    }catch(error){if(context===generation&&epoch===interactionEpoch)message('无法开始这一局：'+(error.message||''),true);}
+    finally{if(context===generation&&epoch===interactionEpoch&&$('game-start')===startButton){starting=false;startButton.disabled=false;}}
   }
   function scheduleFrame(){cancelFrame();if(!active||!engine||terminal(lastSnapshot?.status))return;raf=requestAnimationFrame(now=>{raf=null;if(now-lastFrameAt>=(mode==='race'?50:16)){lastFrameAt=now;update(engine.update(clock()));}if(lastSnapshot.status==='running')scheduleFrame();});}
   function pause(){
+    if(starting)invalidatePending();
     if(!engine||lastSnapshot?.status!=='running')return;cancelFrame();clearEffects();update(engine.pause(clock()));
   }
   function togglePause(){
@@ -269,6 +348,7 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     }
     const overflow=actual.slice(raceChars.length).join('');if(raceOverflow.textContent!==overflow){raceOverflow.textContent=overflow;raceOverflow.className=overflow?'is-wrong':'';}
     previousRaceChars=actual;
+    if(raceLayout){const target=$('game-race-text'),top=raceLayout.tops[Math.min(actual.length,raceSpans.length-1)];if(top<target.scrollTop||top+raceLayout.lineHeight>target.scrollTop+raceLayout.height)target.scrollTop=Math.max(0,top-raceLayout.height/2);}
   }
   function updateDefense(snapshot){
     text('game-score',snapshot.score);text('game-lives',snapshot.lives);text('game-combo',snapshot.combo);text('game-kills',`${snapshot.kills} / ${snapshot.target}`);
@@ -290,6 +370,7 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     finished=true;cancelFrame();
     const stars=level?levelStars(level.id,snapshot):snapshot.stars;
     pending={bookId:data.bookId,runId,mode,levelId:level?.id||null,passageId:mode==='race'?passage.id:null,stars:Math.max(0,Math.min(3,stars||0)),score:Math.round(snapshot.score||0),seconds:snapshot.seconds,accuracy:snapshot.accuracy,wpm:snapshot.wpm||0,won:snapshot.status==='won'};
+    if(fullRace())pending.readingAdvance={ticket:passage.ticket,index:passage.index,typed:snapshot.value};
     const result=$('game-result');result.hidden=false;
     const title=snapshot.status==='won'?mode==='race'?'抵达终点，完成这一程。':'防线守住了。':snapshot.status==='ended'?'这一局，先到这里。':'再来一次，找回节奏。';
     const detail=snapshot.status==='won'?mode==='race'?snapshot.wonRace?'你领先陪练节奏抵达终点。':'原句已完成，下次试着追上陪练节奏。':`成功击破 ${snapshot.kills} 个词。`:mode==='race'?'继续练习同一段，可以提高速度和准确率。':`本局击破 ${snapshot.kills} 个词；达到目标才能过关。`;
@@ -302,16 +383,20 @@ export function createGamesUI({root, api, onRead, onViewChange}) {
     const actions=el('div','game-actions');actions.append(button('重试保存','game-retry-save',()=>{void persist(true).catch(()=>{});}));
     actions.append(button('再来一局','game-restart',()=>navigate(()=>{engine=null;finished=false;renderArena();}),'game-button is-primary'));
     if(level&&snapshot.status==='won'&&level.id<LEVELS.length){const next=LEVELS.find(item=>item.id===level.id+1);actions.append(button('下一关 →','game-next',()=>{if(!isLevelUnlocked(next.id,data.progress.levels))return;level=next;mode=next.mode;engine=null;finished=false;selectPassage(next.id-1);renderArena();},'game-button'));}
+    if(fullRace()&&snapshot.status==='won'&&selected.index<selected.total-1)actions.append(button('竞速下一段 →','game-next-paragraph',()=>void chooseParagraph(selected.index+1),'game-button'));
     result.append(actions);void persist().catch(()=>{});
     result.scrollIntoView({block:'nearest',behavior:'auto'});
   }
-  async function load(bookId,nextView){
-    const token=++generation;clearRun();active=true;view=nextView;root.replaceChildren(el('p','game-loading','正在打开本机游戏素材…'));
-    try{const next=await api.getGameData({bookId});if(token!==generation)return;data=next;data.progress ||= {levels:{},bestRaces:{},recent:[]};nextView==='map'?renderMap():renderHome();}
-    catch(error){if(token!==generation)return;root.replaceChildren();header('暂时无法打开游戏','你的书库和阅读进度保持不变。');message(error.message||'本机素材读取失败。',true);root.append(button('重新打开','game-reload',()=>{void load(bookId,nextView);},'game-button is-primary'));}
+  async function load(bookId,nextView,index,launchMode){
+    const token=++generation;++selectionRevision;clearRun();active=true;view=nextView;selected=null;prepareError=null;preparing=false;selectionBusy=false;starting=false;root.replaceChildren(el('p','game-loading','正在打开本机游戏素材…'));
+    try{
+      const next=await api.getGameData({bookId});if(token!==generation)return;data=next;data.progress ||= {levels:{},bestRaces:{},recent:[]};
+      if(data.bookId!=='sample'&&api.getGamePassage){const paragraph=await api.getGamePassage({bookId:data.bookId,...(Number.isInteger(index)?{index}:{})});if(token!==generation)return;selected=paragraph;}
+      if(launchMode){origin=nextView;mode=launchMode;selectPassage(0);renderArena();}else nextView==='map'?renderMap():renderHome();
+    }catch(error){if(token!==generation)return;root.replaceChildren();header('暂时无法打开游戏','你的书库和阅读进度保持不变。');message(error.message||'本机素材读取失败。',true);root.append(button('重新打开','game-reload',()=>{void load(bookId,nextView,index,launchMode);},'game-button is-primary'));}
   }
-  async function open({bookId,view:nextView='games'}){pause();await flush();document.body.classList.add('games-open');requestedBookId=bookId;await load(bookId,nextView);}
-  function close(){pause();active=false;generation++;cancelFrame();clearEffects();document.body.classList.remove('games-open');}
+  async function open({bookId,view:nextView='games',index,mode:launchMode}){pause();await flush();document.body.classList.add('games-open');requestedBookId=bookId;await load(bookId,nextView,index,launchMode);}
+  function close(){invalidatePending();pause();active=false;generation++;selectionRevision++;cancelFrame();clearEffects();document.body.classList.remove('games-open');}
   window.addEventListener('blur',pause);
   const motionChanged=()=>{clearEffects();if(engine&&mode==='defense')updateDefense(engine.snapshot(clock()));};
   window.addEventListener('noveltype:motion-change',motionChanged);reducedMotion.addEventListener('change',motionChanged);

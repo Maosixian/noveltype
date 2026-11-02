@@ -77,4 +77,4 @@ class GameStore{
     this.data=next;return this.get(result.bookId);
   }
 }
-module.exports={GameStore};
+module.exports={GameStore,validateResult};

@@ -73,6 +73,12 @@
 #games-view[data-screen="home"] .game-description{margin-top:0}
 #games-view .game-race-config.is-level{grid-template-columns:auto minmax(140px,260px);justify-content:start}
 #games-view .game-arena-top .game-metrics{margin:0 0 0 auto;gap:22px}#games-view .game-arena-top .game-metric strong{font-size:20px}
+#games-view .game-paragraph-picker{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 18px;font-size:12px;color:var(--game-muted)}
+#games-view .game-paragraph-picker label{white-space:nowrap}#games-view .game-paragraph-picker input{width:85px;min-height:36px;padding:6px 10px;border:1px solid var(--game-line);border-radius:8px;background:var(--game-card);color:var(--game-text);font-variant-numeric:tabular-nums}
+#games-view .game-paragraph-picker .game-button{min-height:36px;padding:6px 16px;font-size:12px}#games-view .game-paragraph-picker .game-link{font-size:12px;padding:6px 0}#games-view .game-paragraph-total{margin-right:4px}
+#games-view .game-pending{max-width:850px;margin:20px auto;text-align:left}#games-view .game-pending p{max-width:none;margin-left:0;white-space:pre-wrap}#games-view .game-pending .game-button{margin-top:22px}#games-view .game-pending-source{max-height:180px;overflow:auto;line-height:1.9}
+#games-view .is-full-paragraph .game-race-text{position:relative;max-height:190px;overflow-y:auto;padding-left:3px;scrollbar-gutter:stable;overscroll-behavior:contain}
+#games-view .is-full-paragraph .game-source-context{max-height:85px;overflow-y:auto;overscroll-behavior:contain}
 @media(max-width:1050px){
 #games-view .game-world-hero{min-height:330px}#games-view .game-world-copy{padding:30px}#games-view .game-world-copy h2{font-size:39px}#games-view .game-world-copy p{font-size:13px;margin:15px 0 20px}#games-view .game-race-config{grid-template-columns:auto minmax(120px,1fr)}#games-view .game-choice{padding:23px;min-height:175px}
 }
@@ -102,3 +108,10 @@
 @media(prefers-reduced-motion:reduce){#games-view *,#games-view *:before,#games-view *:after{animation:none!important;transition:none!important}#games-view .game-enemy-trail{display:none}}
 html[data-motion="off"] #games-view *,html[data-motion="off"] #games-view *:before,html[data-motion="reduced"] #games-view *,html[data-motion="reduced"] #games-view *:before{animation:none!important;transition:none!important}
 html:is([data-motion="off"],[data-motion="reduced"]) #games-view .game-enemy-trail{display:none}
+
+@media(min-width:741px) and (max-height:800px){#games-view .game-paragraph-picker{margin-bottom:10px;gap:10px}#games-view .is-full-paragraph .game-race-text{max-height:100px}#games-view .is-full-paragraph .game-source-context{max-height:45px}#games-view[data-screen="home"] .game-paragraph-picker{margin-top:-4px}}
+@media(min-width:741px) and (max-height:700px){#games-view .game-paragraph-picker{margin-bottom:7px;gap:9px}#games-view .game-paragraph-picker input{min-height:32px;padding:4px 8px}#games-view .game-paragraph-picker .game-button{min-height:32px;padding:4px 14px}#games-view .is-full-paragraph .game-race-text{max-height:80px}#games-view .is-full-paragraph .game-source-context{max-height:39px}}
+
+#games-view .game-race-config.is-full{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#games-view .game-race-config.is-full .game-paragraph-picker{margin:0;flex:1;gap:9px}#games-view .game-race-config.is-full .game-paragraph-picker input{width:72px}#games-view .game-race-config.is-full>select{width:175px}
+@media(min-width:741px) and (max-height:800px){#games-view[data-screen="home"][data-paragraph="true"] .game-world-hero{min-height:210px}#games-view[data-screen="home"][data-paragraph="true"] .game-world-copy{padding:20px 28px}#games-view[data-screen="home"][data-paragraph="true"] .game-world-copy h2{font-size:32px}#games-view[data-screen="home"][data-paragraph="true"] .game-world-copy p{display:none}#games-view[data-screen="home"][data-paragraph="true"] .game-world-copy .game-button{margin-top:17px}}

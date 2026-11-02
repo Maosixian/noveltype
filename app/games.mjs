@@ -83,10 +83,15 @@ class GameClock {
   _seconds(now) { return Math.min(this.duration, this._timeAt(now) / 1000); }
 }
 
+export function paragraphRaceTimeLimit(text) {
+  // Allow a beginner roughly ten words per minute, bounded by a one-hour round.
+  return clamp(Math.ceil(Array.from(String(text)).length / 5 / 10 * 60 + 30),180,3600);
+}
+
 export class RaceSession extends GameClock {
   constructor({ text, opponentWpm = 35, timeLimit = 180, minAccuracy = 0 } = {}) {
     if (typeof text !== 'string' || !text.trim() || text.length > 10000) throw new Error('竞速需要一段有效的英文译文。');
-    super(numeric(timeLimit, 180, 1, 600));
+    super(numeric(timeLimit, 180, 1, 3600));
     this.text = text;
     this.length = Array.from(text).length;
     this.opponentWpm = numeric(opponentWpm, 35, 1, 500);
