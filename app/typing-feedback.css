@@ -1,0 +1,9 @@
+.typing-panel { position: relative; }
+.typing-bottom { flex-wrap: wrap; }
+.typing-feedback { margin-inline-start: auto; color: var(--green); font-size: 11px; font-weight: 650; white-space: nowrap; pointer-events: none; }
+.typing-feedback-accent { position: absolute; inset: 0 14px auto; height: 2px; background: var(--green); border-radius: 2px; opacity: 0; transform-origin: left; pointer-events: none; }
+html[data-motion="off"] .typing-feedback,
+html[data-motion="off"] .typing-feedback-accent { display: none; }
+html[data-motion="off"] .target-char.caret::before,
+html[data-motion="reduced"] .target-char.caret::before { animation: none; }
+@media (prefers-reduced-motion: reduce) { .typing-feedback-accent { display: none; } }

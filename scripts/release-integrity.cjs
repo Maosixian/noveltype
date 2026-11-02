@@ -7,7 +7,8 @@ const {execFileSync}=require('node:child_process');
 const asar=require('@electron/asar');
 
 const appFiles=['main.cjs','preload.cjs','library.cjs','security.cjs','translation.cjs','typing.mjs','stream.mjs','renderer.js','index.html','styles.css','alignment.cjs','alignment.mjs','demo-alignment.cjs','practice.cjs','games.mjs','games-ui.mjs','games.css','game-content.cjs','game-store.cjs','appearance.css','cloud-client.cjs','cloud-library.cjs','cloud-workspace.cjs','account-ui.mjs'];
-const allowed=new Set(['app','package.json','使用说明.md',...appFiles.map(name=>'app/'+name)]);
+appFiles.push('presentation.mjs','typing-feedback.mjs','typing-feedback.css','assets/arcade-world.png');
+const allowed=new Set(['app','app/assets','package.json','使用说明.md',...appFiles.map(name=>'app/'+name)]);
 function assertAppEntries(entries){
   for(const entry of entries){
     const name=entry.replaceAll('\\','/').replace(/^\//,'');
@@ -19,7 +20,7 @@ function verify(root=path.resolve(__dirname,'..')){
   const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
   const archive=path.join(root,'dist/win-unpacked/resources/app.asar');
   assertAppEntries(asar.listPackage(archive));
-  for(const name of appFiles)assert.deepEqual(asar.extractFile(archive,'app/'+name),fs.readFileSync(path.join(root,'app',name)),'Packaged source mismatch: '+name);
+  for(const name of appFiles)assert.deepEqual(asar.extractFile(archive,path.join('app',name)),fs.readFileSync(path.join(root,'app',name)),'Packaged source mismatch: '+name);
   const bundled=JSON.parse(asar.extractFile(archive,'package.json'));
   assert.equal(bundled.name,pkg.name);assert.equal(bundled.version,pkg.version);assert.equal(bundled.main,'app/main.cjs');
   assert.ok(!bundled.dependencies||Object.keys(bundled.dependencies).length===0,'Review newly added runtime dependencies');
