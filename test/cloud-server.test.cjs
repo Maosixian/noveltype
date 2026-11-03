@@ -113,3 +113,29 @@ test('built-in sample game progress syncs without creating a fake library book',
   const changes=(await f.sync([])).data.changes;assert.equal(changes.length,1);assert.equal(changes[0].kind,'games');assert.equal(changes[0].key,'sample');
   assert.equal((await f.sync([mutation('games','missing-book',game)])).status,400);
 });
+
+test('account quota accepts content above 128 MiB up to 256 MiB and rejects growth without losing acknowledged data',async t=>{
+  const f=await fixture(t),store=f.service.store,user=store.authenticate(f.alice),limit=256*1024*1024;
+  // Simulate prior accounted content without allocating a huge test database.
+  const setUsage=bytes=>store.db.prepare('INSERT OR REPLACE INTO usage VALUES(?,?)').run(user.id,bytes);
+  const usage=()=>store.db.prepare('SELECT bytes FROM usage WHERE user_id=?').get(user.id).bytes;
+  const bytes=value=>Buffer.byteLength(JSON.stringify(value));
+  setUsage(128*1024*1024+1);
+  let response=await f.sync([mutation('book',book.id,book)]);
+  assert.equal(response.status,200);assert.equal(usage(),128*1024*1024+1+bytes(book));
+  const second={...book,id:'second-book',title:'Synthetic quota boundary'};
+  setUsage(limit-bytes(second));
+  response=await f.sync([mutation('book',second.id,second)]);
+  assert.equal(response.status,200);assert.equal(usage(),limit);
+  const saved=store.entity(user.id,'book',second.id);
+  response=await f.sync([mutation('book',second.id,second,crypto.randomUUID(),saved.revision)]);
+  assert.equal(response.status,200);assert.equal(usage(),limit,'Replacing equal content does not double-count it');
+  const before=store.entity(user.id,'book',second.id),mutations=store.db.prepare('SELECT COUNT(*) n FROM mutations WHERE user_id=?').get(user.id).n;
+  response=await f.sync([mutation('book',second.id,{...second,title:second.title+'x'},crypto.randomUUID(),before.revision)]);
+  assert.equal(response.status,413);assert.equal(response.data.code,'ACCOUNT_QUOTA');
+  assert.match(response.data.error,/256 MB/);assert.deepEqual(store.entity(user.id,'book',second.id),before);assert.equal(usage(),limit);
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM mutations WHERE user_id=?').get(user.id).n,mutations);
+  response=await f.sync([mutation('book',second.id,{...second,title:'x'},crypto.randomUUID(),before.revision)]);
+  assert.equal(response.status,200);assert.equal(usage(),limit-bytes(second)+bytes({...second,title:'x'}));
+  assert.equal((await f.sync([mutation('book',book.id,book)],f.bob)).status,200,'Another account keeps its independent quota');
+});

@@ -68,7 +68,7 @@ class Store {
     const serialized=JSON.stringify(value);
     const previous=this.db.prepare('SELECT length(CAST(value AS BLOB)) bytes FROM entities WHERE user_id=? AND kind=? AND key=?').get(userId,kind,key)?.bytes||0;
     const total=this.db.prepare('SELECT bytes FROM usage WHERE user_id=?').get(userId)?.bytes||0;
-    if(total-previous+Buffer.byteLength(serialized)>128*1024*1024)throw new Fault(413,'ACCOUNT_QUOTA','账号同步数据已达 128 MB 上限，请联系管理员。');
+    if(total-previous+Buffer.byteLength(serialized)>256*1024*1024)throw new Fault(413,'ACCOUNT_QUOTA','账号同步数据已达 256 MB 上限，请联系管理员。');
     const revision=Number(this.db.prepare('INSERT INTO revisions DEFAULT VALUES').run().lastInsertRowid);
     this.db.prepare('INSERT INTO entities VALUES(?,?,?,?,?) ON CONFLICT(user_id,kind,key) DO UPDATE SET revision=excluded.revision,value=excluded.value').run(userId,kind,key,revision,serialized);
     this.db.prepare('INSERT INTO usage VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET bytes=excluded.bytes').run(userId,total-previous+Buffer.byteLength(serialized));
