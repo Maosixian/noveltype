@@ -51,6 +51,14 @@ jobs:
         env:
           NOVELTYPE_PACKAGED_EXE: dist/win-unpacked/NovelType.exe
         run: node test/chapter-smoke.cjs
+      - name: Verify multiline typing and parallel reading in the packaged app
+        env:
+          NOVELTYPE_PACKAGED_EXE: dist/win-unpacked/NovelType.exe
+        run: |
+          node test/multiline-typing-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged multiline input regression failed' }
+          node test/parallel-layout-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged parallel layout regression failed' }
       - name: Install and verify on the disposable Windows runner
         shell: pwsh
         run: |

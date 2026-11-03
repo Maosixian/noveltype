@@ -51,9 +51,31 @@ function showChapterFeedback(message){
 $('chapter-notice-dismiss').addEventListener('click',hideChapterFeedback);
 window.addEventListener('noveltype:motion-change',cancelChapterAnimation);
 chapterReducedMotion.addEventListener('change',cancelChapterAnimation);
-// The chapter card can change the sticky toolbar's height. Keep paragraph
-// navigation below it without measuring layout in the typing handler.
-new ResizeObserver(entries=>{const height=entries[0]?.borderBoxSize?.[0]?.blockSize;if(height)document.documentElement.style.setProperty('--stream-toolbar-height',`${Math.ceil(height)}px`);}).observe($('stream-toolbar'));
+// Observe only the current source and the two sticky headers. A tall source must
+// scroll normally so its final lines remain reachable, including at large font
+// sizes. Layout is never measured by the typing handler.
+const readingAppbar=document.querySelector('.appbar'),readingToolbar=$('stream-toolbar');
+let observedSource=null,sourceBlockHeight=0,appbarBlockHeight=76,toolbarBlockHeight=155;
+function updateSourceStickiness(){
+  observedSource?.classList.toggle('source-can-stick',sourceBlockHeight>0&&sourceBlockHeight<=Math.max(0,innerHeight-appbarBlockHeight-toolbarBlockHeight-20));
+}
+const readingLayoutObserver=new ResizeObserver(entries=>{
+  for(const entry of entries){
+    const height=entry.borderBoxSize?.[0]?.blockSize??entry.contentRect.height;
+    if(entry.target===readingToolbar&&height>0){toolbarBlockHeight=Math.ceil(height);document.documentElement.style.setProperty('--stream-toolbar-height',`${toolbarBlockHeight}px`);}
+    else if(entry.target===readingAppbar&&height>0)appbarBlockHeight=height;
+    else if(entry.target===observedSource)sourceBlockHeight=height;
+  }
+  updateSourceStickiness();
+});
+readingLayoutObserver.observe(readingAppbar);readingLayoutObserver.observe(readingToolbar);
+window.addEventListener('resize',updateSourceStickiness);
+function observeActiveSource(source){
+  if(observedSource===source)return;
+  if(observedSource){readingLayoutObserver.unobserve(observedSource);observedSource.classList.remove('source-can-stick');}
+  observedSource=source;sourceBlockHeight=0;
+  if(source)readingLayoutObserver.observe(source);
+}
 function setText(element,text){if(element.textContent!==text)element.textContent=text;}
 const providerName=()=>presets[state.settings.provider]?.label||'自定义服务';
 const errorText=error=>error?.message||'操作未完成，请重试。';
@@ -168,9 +190,15 @@ function createParagraph(index){
   const book=currentBook(),segment=book.segments[index],row=document.createElement('article');row.className='story-passage';row.dataset.index=String(index);
   const heading=document.createElement('div');heading.className='story-passage-heading';const label=document.createElement('span');label.className='paragraph-number';label.textContent=String(index+1).padStart(3,'0');const status=document.createElement('span');status.className='paragraph-status';const select=document.createElement('button');select.type='button';select.className='practice-here button text-button';select.textContent='从这里练习';select.addEventListener('click',()=>chooseParagraph(index));heading.append(label,status,select);
   const race=document.createElement('button');race.type='button';race.className='race-here button text-button';race.textContent='用此段竞速';race.addEventListener('click',()=>switchView('games',{index,mode:'race'}));heading.append(race);
+  const parallel=document.createElement('div');parallel.className='passage-parallel';
+  const sourceColumn=document.createElement('div');sourceColumn.className='passage-source';sourceColumn.lang='zh-CN';
+  const sourceLabel=document.createElement('p');sourceLabel.className='parallel-label';sourceLabel.textContent='中文原文';
   const source=document.createElement('p');source.className='stream-source';source.textContent=segment.source;
   const guide=document.createElement('p');guide.className='guide-status';guide.hidden=true;
-  const english=document.createElement('p');english.className='stream-english';english.lang='en';row.append(heading,guide,source,english);rows.set(index,row);updateParagraph(index);return row;
+  const practiceColumn=document.createElement('div');practiceColumn.className='passage-practice';
+  const practiceLabel=document.createElement('p');practiceLabel.className='parallel-label';practiceLabel.textContent='英文练习';
+  const english=document.createElement('p');english.className='stream-english';english.lang='en';
+  sourceColumn.append(sourceLabel,guide,source);practiceColumn.append(practiceLabel,english);parallel.append(sourceColumn,practiceColumn);row.append(heading,parallel);rows.set(index,row);updateParagraph(index);return row;
 }
 function updateParagraph(index){const row=rows.get(index),book=currentBook();if(!row||!book)return;const segment=book.segments[index],active=index===book.position;row.classList.toggle('is-complete',book.completed.includes(index));row.classList.toggle('is-active',active);row.querySelector('.paragraph-status').textContent=active?'当前输入':book.completed.includes(index)?'已练习':segment.translation?'译文已就绪':'待练习时翻译';row.querySelector('.practice-here').hidden=active;if(!active){row.querySelector('.stream-english').textContent=segment.translation||'开始练习后，将按顺序准备英文译文。';row.querySelector('.stream-english').classList.toggle('untranslated',!segment.translation);row.querySelector('.stream-source').textContent=segment.source;row.querySelector('.guide-status').hidden=true;row.guideRange='';row.targetCache=null;}}
 function renderTarget(){
@@ -189,19 +217,31 @@ function renderTarget(){
     cache=row.targetCache={translation,characters,nodes,offsets,classes:[],extra:null};
   }
   const hit=renderSourceGuide(),value=Array.from(valueText),cursor=targetOffset(translation,valueText,selection);
+  let mismatchCount=0,firstMismatch=-1;
   for(let index=0;index<cache.characters.length;index++){
     const character=cache.characters[index],offset=cache.offsets[index];let className='target-char';
-    if(index<value.length)className+=charactersMatch(value[index],character)?' correct':' wrong';
+    if(index<value.length){const matches=charactersMatch(value[index],character);className+=matches?' correct':' wrong';if(!matches){mismatchCount++;if(firstMismatch<0)firstMismatch=index;}}
     if(offset===cursor&&!session?.complete)className+=' caret';
     if(character===' ')className+=' space';
+    if(character==='\n')className+=' newline';
+    if(character==='\t')className+=' tab';
     if(hit&&offset>=hit.word.start&&offset<hit.word.end)className+=' aligned-word';
     if(cache.classes[index]!==className){cache.nodes[index].className=className;cache.classes[index]=className;}
   }
   const overflow=value.slice(cache.characters.length).join('');
+  if(overflow){mismatchCount+=value.length-cache.characters.length;if(firstMismatch<0)firstMismatch=cache.characters.length;}
   if(overflow){if(!cache.extra){cache.extra=document.createElement('span');cache.extra.className='target-char wrong';target.append(cache.extra);}setText(cache.extra,overflow);}
   else if(cache.extra){cache.extra.remove();cache.extra=null;}
   Object.assign(cache,{value:valueText,selection,alignment,complete:session?.complete});
   setText($('character-count'),`${value.length} / ${cache.characters.length}`);
+  $('typing-correction').hidden=mismatchCount===0;
+  if(firstMismatch>=0){
+    const expected=cache.characters[firstMismatch],label=expected==='\n'?'换行（Enter）':expected==='\t'?'制表符（Tab）':expected===' '?'空格（Space）':expected===undefined?'删除多余字符':`“${expected}”`;
+    setText($('typing-error-text'),`还有 ${mismatchCount} 个字符未匹配 · 第 ${firstMismatch+1} 个字符${expected===undefined?'需':'应为'}${label}，修正后自动接续。`);
+    $('first-error').dataset.offset=String(value.slice(0,firstMismatch).join('').length);
+    $('first-error').dataset.length=String(value[firstMismatch]?.length||0);
+  }else{setText($('typing-error-text'),'');delete $('first-error').dataset.offset;delete $('first-error').dataset.length;}
+  setText($('typing-help'),`不区分大小写 · 标点和空格需一致${translation.includes('\n')?' · ↵ 按 Enter 换行':''}${translation.includes('\t')?' · ⇥ 按 Tab':''} · 打完自动接续`);
 }
 function loadMore(direction){
   const book=currentBook();if(!book)return;const next=extendRange(range,direction,book.segments.length);if(next.start===range.start&&next.end===range.end)return;
@@ -218,11 +258,13 @@ function mountActive({focus=false,scroll=false}={}){
   const book=currentBook();if(!book)return;ensureRow(book.position);movingInput=true;
   if(activeRow){for(const selector of ['.stream-source','.stream-english','.guide-status'])activeRow.querySelector(selector).removeAttribute('id');updateParagraph(Number(activeRow.dataset.index));}
   updateParagraph(book.position);activeRow=rows.get(book.position);
-  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.querySelector('.guide-status').id='guide-status';row.append($('typing-panel'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
+  observeActiveSource(activeRow.querySelector('.passage-source'));
+  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.querySelector('.guide-status').id='guide-status';row.querySelector('.passage-practice').append($('typing-panel'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
   if(scroll)revealInput(focus);else if(focus&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});
   void readAlignmentWindow(book).then(()=>{if(currentBook()?.id===book.id)renderTarget();}).catch(()=>{if(currentBook()?.id===book.id)notice('中文对照缓存暂时无法读取，可以继续打字；点击开始练习可重试。',true);});
 }
 function renderPassage(){
+  observeActiveSource(null);
   resetChapterFeedback();$('stream-toolbar').append(chapterNodes.panel);
   stopContinuous();typingFeedback.reset();explicitPause=false;const book=currentBook();$('reading-view').hidden=!book;$('empty-state').hidden=Boolean(book);movingInput=true;$('input-parking').append($('typing-panel'));rows.clear();activeRow=null;$('story-stream').replaceChildren();movingInput=false;liveTotals={characters:0,seconds:0,attempts:0,errors:0};
   if(!book){session=null;renderControls();return;}
@@ -288,7 +330,17 @@ $('typing-input').addEventListener('input',event=>{
 for(const name of ['select','keyup','click'])$('typing-input').addEventListener(name,()=>{if(!movingInput&&session)renderTarget();});
 for(const name of ['paste','drop'])$('typing-input').addEventListener(name,event=>{event.preventDefault();notice('练习区只接受逐字键盘输入。自己的译文可粘贴到「编辑本段译文」。');});
 $('typing-input').addEventListener('beforeinput',event=>{if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||''))event.preventDefault();});
-$('typing-input').addEventListener('keydown',event=>{if(event.key==='Enter')event.preventDefault();});
+$('typing-input').addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&!session?.target.includes('\n'))event.preventDefault();
+  if(event.key==='Tab'&&session?.target.includes('\t')&&!event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&!event.isComposing&&!busy&&!explicitPause&&!session.complete){
+    event.preventDefault();const input=$('typing-input');input.setRangeText('\t',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:'\t',bubbles:true}));
+  }
+});
+$('first-error').addEventListener('click',()=>{
+  const input=$('typing-input');if(input.disabled||input.readOnly||$('typing-correction').hidden)return;
+  const offset=Number($('first-error').dataset.offset),length=Number($('first-error').dataset.length);
+  input.focus({preventScroll:true});input.setSelectionRange(offset,offset+length);renderTarget();
+});
 $('typing-input').addEventListener('focus',()=>{if(!movingInput&&!explicitPause)session?.resume(now());});
 $('typing-input').addEventListener('blur',()=>{if(!movingInput){session?.pause(now());if(session?.hasStarted)scheduleSave();}});
 window.addEventListener('blur',()=>{session?.pause(now());});
