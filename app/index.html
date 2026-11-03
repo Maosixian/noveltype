@@ -64,7 +64,8 @@
           <p id="book-finished" class="book-finished" role="status" hidden>已到本书结尾，可以回到书架继续选择内容。</p>
           <div id="input-parking" hidden><div id="typing-panel" class="typing-panel">
             <div class="input-heading"><span id="input-status">正在练习</span><div><button id="edit-translation" class="button text-button">编辑本段译文</button><button id="reset" class="button text-button">本段重练</button></div></div>
-            <label for="typing-input" class="sr-only">照着本段英文输入；中文高亮对应词句，打完自动接续下一段</label><textarea id="typing-input" rows="2" lang="en" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="点击这里，开始打字…" aria-describedby="typing-help guide-status" disabled></textarea>
+            <label for="typing-input" class="sr-only">照着本段英文输入；中文高亮对应词句，打完自动接续下一段</label><textarea id="typing-input" rows="2" lang="en" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="点击这里，开始打字…" aria-describedby="typing-help typing-error-text guide-status" disabled></textarea>
+            <div id="typing-correction" class="typing-correction" hidden><span id="typing-error-text"></span><button id="first-error" class="button text-button" type="button">定位首处</button></div>
             <div class="typing-bottom"><span id="typing-help">不区分大小写 · 标点和空格需一致 · 打完自动接续</span><span id="character-count">0 / 0</span></div>
           </div></div>
         </section>
