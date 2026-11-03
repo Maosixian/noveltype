@@ -50,7 +50,9 @@ Entity kinds:
 | selection | `active` | `{bookId}` |
 | alignment | `bookId:segmentIndex` | `{source,translation,alignment}` bound to the current source and translation |
 
-Books must be created before dependent entities. Source text cannot be replaced under an existing book ID. Synchronize all chunks before using that book on a new client. Change pages return the latest state per entity, in revision order; intermediate overwritten values are not a history API. Sync writes and mutation acknowledgements use one SQLite transaction. Requests are capped at 16 MiB, mutation batches at 32, pages at 50 entities / approximately 8 MiB, entities at 2 MiB, and live account content at 128 MiB. Server errors contain sanitized messages and codes, not provider responses, credentials or stack traces.
+Books must be created before dependent entities. Source text cannot be replaced under an existing book ID. Synchronize all chunks before using that book on a new client. Change pages return the latest state per entity, in revision order; intermediate overwritten values are not a history API. Sync writes and mutation acknowledgements use one SQLite transaction. Requests are capped at 16 MiB, mutation batches at 32, pages at 50 entities / approximately 8 MiB, entities at 2 MiB, and live account content at 256 MiB. Server errors contain sanitized messages and codes, not provider responses, credentials or stack traces.
+
+The account quota includes both book chunks and their bilingual alignment entities. It is separate from the desktop library's 128 MiB serialized limit; desktop releases before 1.9.1 support only 64 MiB and must be updated before opening a larger synced library. Neither limit changes the per-book source limit or the sync request and entity limits.
 
 ## Backup and verification
 

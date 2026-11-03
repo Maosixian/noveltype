@@ -6,7 +6,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const { normalizeTypography } = require('./translation.cjs');
 
 const MAX_BOOK_BYTES = 10 * 1024 * 1024;
-const MAX_LIBRARY_BYTES = 64 * 1024 * 1024;
+const MAX_LIBRARY_BYTES = 128 * 1024 * 1024;
 const MAX_SEGMENTS = 100000;
 const MAX_TRANSLATION = 10000;
 const MAX_BOOKS = 100;
@@ -287,7 +287,7 @@ class Library {
       delta = jsonBytes(record.bookId) - jsonBytes(this.state.activeBookId);
       apply = () => { this.state.activeBookId = record.bookId; };
     } else throw new Error('进度日志类型不正确。');
-    if (this.serializedBytes + delta > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 64 MB，请先导出备份。');
+    if (this.serializedBytes + delta > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 128 MB，请先导出备份。');
     return { delta, apply };
   }
 
@@ -307,7 +307,7 @@ class Library {
     this._assertWritable();
     const valid = validateData(next);
     const text = JSON.stringify(valid);
-    if (Buffer.byteLength(text, 'utf8') > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 64 MB，请先导出备份。');
+    if (Buffer.byteLength(text, 'utf8') > MAX_LIBRARY_BYTES) throw new Error('书库容量超过 128 MB，请先导出备份。');
     try {
       this._checkpoint();
       atomicWrite(this.backup, JSON.stringify(this.state));
