@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="appearance.css">
   <link rel="stylesheet" href="games.css">
   <link rel="stylesheet" href="typing-feedback.css">
+  <link rel="stylesheet" href="chapter-feedback.css">
   <script type="module" src="presentation.mjs"></script>
   <script type="module" src="renderer.js"></script>
 </head>
@@ -46,16 +47,21 @@
         <section class="book-heading" aria-labelledby="book-title"><div><div class="heading-kicker"><span class="eyebrow">正在阅读</span><span id="demo-label" class="tag" hidden>原创双语示例</span></div><h1 id="book-title">逐页</h1><p id="book-meta" class="book-meta"></p></div><div class="book-progress"><span id="book-progress-label">已完成 0%</span><progress id="book-progress" max="100" value="0" aria-label="全书练习进度"></progress><small id="completed-count"></small></div></section>
 
         <section class="continuous-reading" aria-label="连续阅读与打字练习">
-          <div class="stream-toolbar">
-            <div class="stream-title"><h2>跟着故事，慢慢练习。</h2><span id="stream-position"></span></div>
+          <div class="stream-toolbar" id="stream-toolbar">
+            <div class="stream-title"><h2>跟着故事，慢慢练习。</h2><span id="stream-position"></span><span id="current-chapter" class="current-chapter" hidden></span></div>
             <div class="stream-actions"><button id="return-to-input" class="button text-button">回到输入处 ↓</button><button id="pause" class="button secondary" aria-pressed="false">Ⅱ 暂停</button><button id="translate" class="button primary">开始连续练习</button></div>
             <div class="stream-metrics" aria-label="本次练习统计"><span><b id="wpm">0</b> WPM</span><span><b id="accuracy">100</b>% 准确率</span><span id="elapsed">00:00</span><span id="session-note">打完自动接续；可随时上下滚动。</span></div>
+            <section id="chapter-notice" class="chapter-notice" role="status" aria-live="polite" aria-atomic="true" hidden>
+              <span class="chapter-notice-mark" id="chapter-notice-mark" aria-hidden="true">✓</span>
+              <div><div class="chapter-notice-heading"><strong id="chapter-notice-title"></strong><span id="chapter-notice-chapter"></span></div><p id="chapter-notice-next" hidden></p></div>
+              <button id="chapter-notice-dismiss" class="chapter-notice-dismiss" type="button" aria-label="关闭章节提示">×</button>
+            </section>
           </div>
           <p id="translation-disclosure" class="stream-disclosure">开始后按需准备中英对照，提前缓存后面 3 小段。可随时暂停；API 可能计费。</p>
           <div id="stream-top" class="stream-sentinel" aria-hidden="true"></div>
           <div id="story-stream" class="story-stream" aria-label="小说连续正文"></div>
           <div id="stream-bottom" class="stream-sentinel" aria-hidden="true"></div>
-          <p id="book-finished" class="book-finished" role="status" hidden>这一页接着那一页，你已经打完了整本故事。</p>
+          <p id="book-finished" class="book-finished" role="status" hidden>已到本书结尾，可以回到书架继续选择内容。</p>
           <div id="input-parking" hidden><div id="typing-panel" class="typing-panel">
             <div class="input-heading"><span id="input-status">正在练习</span><div><button id="edit-translation" class="button text-button">编辑本段译文</button><button id="reset" class="button text-button">本段重练</button></div></div>
             <label for="typing-input" class="sr-only">照着本段英文输入；中文高亮对应词句，打完自动接续下一段</label><textarea id="typing-input" rows="2" lang="en" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="点击这里，开始打字…" aria-describedby="typing-help guide-status" disabled></textarea>

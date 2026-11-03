@@ -30,10 +30,10 @@ const icons = {
 };
 
 /** Game UI owns round state. Durable reading progress comes only from a validated full-race result. */
-export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTranslation}) {
+export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTranslation, onContextChange, onReadingCompletion}) {
   let data=null, requestedBookId=null, view='games', engine=null, mode=null, level=null, passage=null;
   let runId=null, raf=null, active=false, generation=0, finished=false, lastSnapshot=null;
-  let pending=null, savePromise=null, saveError=null, origin='games', opponent='35';
+  let pending=null, pendingChapter=null, savePromise=null, saveError=null, origin='games', opponent='35';
   let selected=null, selectionRevision=0, selectionBusy=false, preparing=false, prepareError=null, starting=false, readingStatus=null;
   let raceObserver=null, raceLayout=null, interactionEpoch=0;
   const $ = id => root.querySelector('#'+id);
@@ -61,7 +61,7 @@ export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTr
     animation?.finished.catch(()=>{}).finally(()=>burst.remove());
   }
   function invalidatePending(){interactionEpoch++;starting=false;selectionBusy=false;preparing=false;const control=$('game-start');if(control&&!engine)control.disabled=false;}
-  function resetView(){invalidatePending();clearEffects();hud.clear();stageObserver?.disconnect();stageObserver=null;raceObserver?.disconnect();raceObserver=null;raceLayout=null;root.replaceChildren();}
+  function resetView(){onContextChange?.();invalidatePending();clearEffects();hud.clear();stageObserver?.disconnect();stageObserver=null;raceObserver?.disconnect();raceObserver=null;raceLayout=null;root.replaceChildren();}
 
 
   function message(text, error=false) {
@@ -81,11 +81,11 @@ export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTr
     if(savePromise)return savePromise;
     if(!pending)return;
     if(saveError&&!retry)throw saveError;
-    const payload=pending;
+    const payload=pending,chapterReceipt=pendingChapter;
     saveError=null;
     savePromise=api.saveGameResult(payload).then(progress=>{
-      if(data?.bookId===payload.bookId){const {readingProgress,readingStatus:status,...gameProgress}=progress;data.progress=gameProgress;readingStatus=status||null;if(readingProgress){if(selected)selected.position=readingProgress.position;onProgress?.(readingProgress);}}
-      if(pending===payload)pending=null;
+      if(data?.bookId===payload.bookId){const {readingProgress,readingStatus:status,...gameProgress}=progress;data.progress=gameProgress;readingStatus=status||null;if(readingProgress){if(selected)selected.position=readingProgress.position;onProgress?.(readingProgress,{status,chapterReceipt});}}
+      if(pending===payload){pending=null;pendingChapter=null;}
     }).catch(error=>{saveError=error;throw error;}).finally(()=>{savePromise=null;saveStatus();});
     saveStatus();return savePromise;
   }
@@ -93,7 +93,7 @@ export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTr
   function cancelFrame(){if(raf!==null)cancelAnimationFrame(raf);raf=null;}
   function clearRun(){invalidatePending();cancelFrame();clearEffects();stageObserver?.disconnect();stageObserver=null;engine=null;mode=null;level=null;passage=null;nodes.clear();lastRaceValue=null;raceChars=[];raceSpans=[];previousRaceChars=[];finished=false;readingStatus=null;}
   async function navigate(fn) {
-    invalidatePending();pause();
+    onContextChange?.();invalidatePending();pause();
     try{await flush();await fn();}catch(error){message('请先重试保存本局成绩，再离开游戏。'+(error.message||''),true);}
   }
   function header(title, detail) {
@@ -371,6 +371,9 @@ export function createGamesUI({root, api, onRead, onViewChange, onProgress, onTr
     const stars=level?levelStars(level.id,snapshot):snapshot.stars;
     pending={bookId:data.bookId,runId,mode,levelId:level?.id||null,passageId:mode==='race'?passage.id:null,stars:Math.max(0,Math.min(3,stars||0)),score:Math.round(snapshot.score||0),seconds:snapshot.seconds,accuracy:snapshot.accuracy,wpm:snapshot.wpm||0,won:snapshot.status==='won'};
     if(fullRace())pending.readingAdvance={ticket:passage.ticket,index:passage.index,typed:snapshot.value};
+    // Capture the originating UI context now; navigation while a save is in
+    // flight must not turn its late acknowledgement into a new celebration.
+    pendingChapter=fullRace()&&snapshot.status==='won'?onReadingCompletion?.({bookId:data.bookId,index:passage.index,runId}):null;
     const result=$('game-result');result.hidden=false;
     const title=snapshot.status==='won'?mode==='race'?'抵达终点，完成这一程。':'防线守住了。':snapshot.status==='ended'?'这一局，先到这里。':'再来一次，找回节奏。';
     const detail=snapshot.status==='won'?mode==='race'?snapshot.wonRace?'你领先陪练节奏抵达终点。':'原句已完成，下次试着追上陪练节奏。':`成功击破 ${snapshot.kills} 个词。`:mode==='race'?'继续练习同一段，可以提高速度和准确率。':`本局击破 ${snapshot.kills} 个词；达到目标才能过关。`;

@@ -47,6 +47,10 @@ jobs:
         env:
           NOVELTYPE_PACKAGED_EXE: dist/win-unpacked/NovelType.exe
         run: node test/packaged-smoke.cjs
+      - name: Verify chapter transitions in the packaged app
+        env:
+          NOVELTYPE_PACKAGED_EXE: dist/win-unpacked/NovelType.exe
+        run: node test/chapter-smoke.cjs
       - name: Install and verify on the disposable Windows runner
         shell: pwsh
         run: |
