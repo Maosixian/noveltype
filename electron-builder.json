@@ -10,7 +10,7 @@
     "app/translation.cjs", "app/typing.mjs", "app/stream.mjs", "app/renderer.js",
     "app/alignment.cjs", "app/alignment.mjs", "app/demo-alignment.cjs", "app/practice.cjs",
     "app/games.mjs", "app/games-ui.mjs", "app/games.css", "app/game-content.cjs", "app/game-store.cjs", "app/race-results.cjs", "app/progress-save.cjs", "app/appearance.css",
-    "app/index.html", "app/styles.css", "app/presentation.mjs", "app/typing-feedback.mjs", "app/typing-feedback.css", "app/assets/arcade-world.png", "package.json", "使用说明.md"
+    "app/index.html", "app/styles.css", "app/presentation.mjs", "app/typing-feedback.mjs", "app/typing-feedback.css", "app/chapters.mjs", "app/chapter-feedback.mjs", "app/chapter-feedback.css", "app/assets/arcade-world.png", "package.json", "使用说明.md"
     , "app/cloud-client.cjs", "app/cloud-library.cjs", "app/cloud-workspace.cjs", "app/account-ui.mjs"
   ],
   "artifactName": "NovelType-${version}-win-${arch}.${ext}",

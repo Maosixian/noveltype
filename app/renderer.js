@@ -4,6 +4,8 @@ import { setupAccount } from './account-ui.mjs';
 import { alignmentAtCursor, targetOffset } from './alignment.mjs';
 import { createGamesUI } from './games-ui.mjs';
 import { createTypingFeedback } from './typing-feedback.mjs';
+import { createChapterIndex } from './chapters.mjs';
+import { createChapterFeedback } from './chapter-feedback.mjs';
 const $=id=>document.getElementById(id);
 const api=window.novel;
 let gamesUI,activeView='reading',viewBusy=false;
@@ -22,7 +24,36 @@ const currentBook=()=>state.books.find(book=>book.id===state.activeBookId);
 const currentSegment=()=>currentBook()?.segments[currentBook().position];
 const now=()=>performance.now();
 const typingFeedback=createTypingFeedback({panel:$('typing-panel')});
+const chapterFeedback=createChapterFeedback(),chapterIndexes=new WeakMap(),chapterReceipts=new WeakMap();
+const chapterNodes={panel:$('chapter-notice'),title:$('chapter-notice-title'),chapter:$('chapter-notice-chapter'),next:$('chapter-notice-next'),mark:$('chapter-notice-mark')};
+const chapterReducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
+let chapterAnimation=null;
 let activeRow=null;
+function chaptersFor(book){let index=chapterIndexes.get(book.segments);if(!index){index=createChapterIndex(book.segments);chapterIndexes.set(book.segments,index);}return index;}
+function cancelChapterAnimation(){chapterAnimation?.cancel();chapterAnimation=null;}
+function hideChapterFeedback(){cancelChapterAnimation();chapterNodes.panel.hidden=true;}
+function resetChapterFeedback(){chapterFeedback.reset(state.activeBookId);hideChapterFeedback();}
+function captureChapterCompletion(book,index,token){return chapterFeedback.capture({bookId:book.id,transition:chaptersFor(book).transitionAt(index),total:book.segments.length,token});}
+function showChapterFeedback(message){
+  if(!message)return;
+  const host=activeView==='reading'?$('stream-toolbar'):$('game-result');
+  if(!host)return;
+  cancelChapterAnimation();host.append(chapterNodes.panel);
+  chapterNodes.title.textContent=message.title;chapterNodes.chapter.textContent=message.chapter;
+  chapterNodes.next.textContent=message.next;chapterNodes.next.hidden=!message.next;
+  chapterNodes.mark.textContent=message.complete?'✓':'→';chapterNodes.panel.dataset.complete=String(message.complete);
+  chapterNodes.panel.hidden=false;
+  if(!chapterReducedMotion.matches&&!['reduced','off'].includes(document.documentElement.dataset.motion)){
+    chapterAnimation=chapterNodes.panel.animate([{opacity:.4,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{duration:220,easing:'cubic-bezier(.16,1,.3,1)'});
+    chapterAnimation.finished.catch(()=>{});
+  }
+}
+$('chapter-notice-dismiss').addEventListener('click',hideChapterFeedback);
+window.addEventListener('noveltype:motion-change',cancelChapterAnimation);
+chapterReducedMotion.addEventListener('change',cancelChapterAnimation);
+// The chapter card can change the sticky toolbar's height. Keep paragraph
+// navigation below it without measuring layout in the typing handler.
+new ResizeObserver(entries=>{const height=entries[0]?.borderBoxSize?.[0]?.blockSize;if(height)document.documentElement.style.setProperty('--stream-toolbar-height',`${Math.ceil(height)}px`);}).observe($('stream-toolbar'));
 function setText(element,text){if(element.textContent!==text)element.textContent=text;}
 const providerName=()=>presets[state.settings.provider]?.label||'自定义服务';
 const errorText=error=>error?.message||'操作未完成，请重试。';
@@ -90,16 +121,18 @@ function drainSaves(){
       if(local){local.stats=saved.stats;local.completed=[...new Set([...local.completed,...saved.completed])].sort((a,b)=>a-b);}
       savePending.shift();
       if(snapshot.completed!==undefined){renderLibrary();renderOverview();}
+      showChapterFeedback(chapterFeedback.confirm(chapterReceipts.get(snapshot),saved.completed));
     }
     saveFailure=false;$('save-state').textContent='✓ 已保存到本机';
   })().finally(()=>{savePromise=null;});
   return savePromise;
 }
-function queueSave(snapshot){
+function queueSave(snapshot,completion=null){
   if(!snapshot)return;
+  if(completion){const book=currentBook();if(book?.id===snapshot.bookId){const receipt=captureChapterCompletion(book,snapshot.position,completion);if(receipt)chapterReceipts.set(snapshot,receipt);}}
   const last=savePending.at(-1);
   // Only collapse an unstarted plain draft; never drop a completion or the head in flight.
-  if(last&&savePending.length>1&&last.completed===undefined&&snapshot.completed===undefined&&last.bookId===snapshot.bookId&&last.position===snapshot.position)savePending[savePending.length-1]=snapshot;
+  if(last&&savePending.length>1&&last.completed===undefined&&snapshot.completed===undefined&&!chapterReceipts.has(last)&&!chapterReceipts.has(snapshot)&&last.bookId===snapshot.bookId&&last.position===snapshot.position)savePending[savePending.length-1]=snapshot;
   else savePending.push(snapshot);
   $('save-state').textContent='正在保存…';
   if(!saveFailure)void drainSaves().catch(saveError);
@@ -111,7 +144,7 @@ function renderLibrary(){
   for(const book of state.books){const button=document.createElement('button');button.className='book-button';button.type='button';button.setAttribute('aria-current',String(book.id===state.activeBookId));button.disabled=busy;button.title=book.title;const spine=document.createElement('span');spine.className='book-spine';spine.setAttribute('aria-hidden','true');const info=document.createElement('span');info.className='book-info';const title=document.createElement('strong');title.textContent=book.title;const meta=document.createElement('small');meta.textContent=`${book.demo?'示例 · ':''}${book.completed.length} / ${book.segments.length} 段已完成`;info.append(title,meta);button.append(spine,info);button.addEventListener('click',()=>selectBook(book.id));fragment.append(button);}
   $('book-list').replaceChildren(fragment);$('provider-badge').textContent=state.settings.hasKey?providerName():'未配置';
 }
-function renderOverview(){const book=currentBook();if(!book)return;const total=book.segments.length,completed=book.completed.length,percentage=Math.round(completed/total*100);$('book-title').textContent=book.title;$('demo-label').hidden=!book.demo;$('book-meta').textContent=`连续长卷 · ${total} 段 · ${book.demo?'原创双语示例':'本机书库，自动保存'}`;$('book-progress-label').textContent=`已完成 ${percentage}%`;$('book-progress').value=percentage;$('completed-count').textContent=`${completed} / ${total} 段`;$('stream-position').textContent=`正在输入 第 ${book.position+1} / ${total} 段`;$('footer-total').textContent=`已完成 ${book.stats.sessions} 次段落练习 · 累计输入 ${book.stats.characters} 字符`;}
+function renderOverview(){const book=currentBook();if(!book)return;const total=book.segments.length,completed=book.completed.length,percentage=Math.round(completed/total*100);$('book-title').textContent=book.title;$('demo-label').hidden=!book.demo;$('book-meta').textContent=`连续长卷 · ${total} 段 · ${book.demo?'原创双语示例':'本机书库，自动保存'}`;$('book-progress-label').textContent=`已完成 ${percentage}%`;$('book-progress').value=percentage;$('completed-count').textContent=`${completed} / ${total} 段`;$('stream-position').textContent=`正在输入 第 ${book.position+1} / ${total} 段`;$('footer-total').textContent=`已完成 ${book.stats.sessions} 次段落练习 · 累计输入 ${book.stats.characters} 字符`;const chapter=chaptersFor(book).chapterAt(book.position);$('current-chapter').hidden=!chapter;setText($('current-chapter'),chapter?.label||'');}
 function renderControls(){
   const book=currentBook(),translated=Boolean(currentSegment()?.translation),finished=Boolean(session?.complete&&book?.position===book?.segments.length-1);
   $('translate').disabled=busy||(!book)||(!explicitPause&&continuousEnabled);
@@ -190,6 +223,7 @@ function mountActive({focus=false,scroll=false}={}){
   void readAlignmentWindow(book).then(()=>{if(currentBook()?.id===book.id)renderTarget();}).catch(()=>{if(currentBook()?.id===book.id)notice('中文对照缓存暂时无法读取，可以继续打字；点击开始练习可重试。',true);});
 }
 function renderPassage(){
+  resetChapterFeedback();$('stream-toolbar').append(chapterNodes.panel);
   stopContinuous();typingFeedback.reset();explicitPause=false;const book=currentBook();$('reading-view').hidden=!book;$('empty-state').hidden=Boolean(book);movingInput=true;$('input-parking').append($('typing-panel'));rows.clear();activeRow=null;$('story-stream').replaceChildren();movingInput=false;liveTotals={characters:0,seconds:0,attempts:0,errors:0};
   if(!book){session=null;renderControls();return;}
   range=initialRange(book.segments.length,book.position);for(let i=range.start;i<range.end;i++)$('story-stream').append(createParagraph(i));session=new TypingSession(currentSegment().translation||'',book.draft||'');renderSentinels();mountActive({scroll:book.position>0});
@@ -197,7 +231,7 @@ function renderPassage(){
 function advanceCompleted(){
   const book=currentBook();if(!book||!session?.complete)return false;const next=nextPosition(book.position,book.segments.length,true);if(next===book.position){stopContinuous();renderControls();return false;}
   clearTimeout(saveTimer);saveTimer=null;const snapshot=session.snapshot(now());const completion=session.claimCompletion(now());
-  queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})});
+  queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})},completion);
   if(!book.completed.includes(book.position))book.completed.push(book.position);
   liveTotals.characters+=snapshot.characters;liveTotals.seconds+=snapshot.seconds;liveTotals.attempts+=snapshot.attempts;liveTotals.errors+=snapshot.errors;
   book.position=next;book.draft='';session=new TypingSession(currentSegment().translation||'');mountActive({focus:true,scroll:true});queueSave(progressSnapshot());renderLibrary();
@@ -234,10 +268,10 @@ async function startPractice(){
   if(session?.complete)advanceCompleted();renderControls();revealInput();void ensureTranslations();
 }
 async function runStateAction(action,successMessage=''){
-  if(busy)return;if(activeView!=='reading'&&!(await switchView('reading')))return;stopContinuous();busy=true;renderControls();renderLibrary();try{await flushSave();const result=await action();if(result){normalizeState(result);renderLibrary();renderPassage();if(successMessage)notice(successMessage);}}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();}
+  if(busy)return;if(activeView!=='reading'&&!(await switchView('reading')))return;resetChapterFeedback();stopContinuous();busy=true;renderControls();renderLibrary();try{await flushSave();const result=await action();if(result){normalizeState(result);renderLibrary();renderPassage();if(successMessage)notice(successMessage);}}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();}
 }
 async function selectBook(id){if(activeView!=='reading'&&!(await switchView('reading')))return;if(id!==state.activeBookId)await runStateAction(()=>api.selectBook(id));}
-async function chooseParagraph(position){const book=currentBook();if(!book||busy)return;if(position===book.position){revealInput();return;}stopContinuous();busy=true;renderControls();try{await flushSave();const saved=await api.saveProgress({bookId:book.id,position,draft:''});if(saved.bookId!==book.id)throw new Error('进度保存响应不一致，请重试。');typingFeedback.reset();book.position=saved.position;book.draft=saved.draft;book.stats=saved.stats;book.completed=[...new Set([...book.completed,...saved.completed])].sort((a,b)=>a-b);explicitPause=false;session=new TypingSession(currentSegment().translation||'',book.draft);liveTotals={characters:0,seconds:0,attempts:0,errors:0};mountActive({focus:true,scroll:true});notice('');}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();if(!explicitPause&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}}
+async function chooseParagraph(position){const book=currentBook();if(!book||busy)return;if(position===book.position){revealInput();return;}resetChapterFeedback();stopContinuous();busy=true;renderControls();try{await flushSave();const saved=await api.saveProgress({bookId:book.id,position,draft:''});if(saved.bookId!==book.id)throw new Error('进度保存响应不一致，请重试。');typingFeedback.reset();book.position=saved.position;book.draft=saved.draft;book.stats=saved.stats;book.completed=[...new Set([...book.completed,...saved.completed])].sort((a,b)=>a-b);explicitPause=false;session=new TypingSession(currentSegment().translation||'',book.draft);liveTotals={characters:0,seconds:0,attempts:0,errors:0};mountActive({focus:true,scroll:true});notice('');}catch(error){notice(errorText(error),true);}finally{busy=false;renderLibrary();renderControls();if(!explicitPause&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}}
 function pauseForDialog(){stopContinuous();gamesUI?.pause();explicitPause=true;renderControls();}
 window.addEventListener('noveltype:appearance-open',pauseForDialog);
 function lockImportDialog(id,locked){for(const control of $(id).querySelectorAll('button,input,textarea'))control.disabled=locked;$(id).dataset.saving=String(locked);}
@@ -249,7 +283,7 @@ $('typing-input').addEventListener('input',event=>{
   const before=session.value,errorsBefore=session.errors;
   session.resume(now());session.input($('typing-input').value,now());currentBook().draft=session.value;renderTarget();renderMetrics();
   typingFeedback.input({before,value:session.value,target:session.target,complete:session.complete,error:session.errors>errorsBefore,nodes:rows.get(currentBook().position)?.targetCache?.nodes});
-  if(session.complete){if(advanceCompleted())return;const book=currentBook(),completion=session.claimCompletion(now());queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})});if(!book.completed.includes(book.position))book.completed.push(book.position);renderLibrary();renderOverview();renderControls();}else scheduleSave();
+  if(session.complete){if(advanceCompleted())return;const book=currentBook(),completion=session.claimCompletion(now());queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})},completion);if(!book.completed.includes(book.position))book.completed.push(book.position);renderLibrary();renderOverview();renderControls();}else scheduleSave();
 });
 for(const name of ['select','keyup','click'])$('typing-input').addEventListener(name,()=>{if(!movingInput&&session)renderTarget();});
 for(const name of ['paste','drop'])$('typing-input').addEventListener(name,event=>{event.preventDefault();notice('练习区只接受逐字键盘输入。自己的译文可粘贴到「编辑本段译文」。');});
@@ -262,7 +296,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)stopContinu
 $('pause').addEventListener('click',()=>{if(explicitPause){void startPractice();return;}stopContinuous();explicitPause=true;renderControls();renderMetrics();});
 $('translate').addEventListener('click',startPractice);
 $('return-to-input').addEventListener('click',()=>revealInput());
-$('reset').addEventListener('click',()=>{const book=currentBook();if(!book)return;stopContinuous();typingFeedback.reset();book.draft='';explicitPause=false;session=new TypingSession(currentSegment().translation||'');mountActive({focus:true});scheduleSave();});
+$('reset').addEventListener('click',()=>{const book=currentBook();if(!book)return;resetChapterFeedback();stopContinuous();typingFeedback.reset();book.draft='';explicitPause=false;session=new TypingSession(currentSegment().translation||'');mountActive({focus:true});scheduleSave();});
 for(const id of ['import-file','empty-import'])$(id).addEventListener('click',()=>runStateAction(()=>api.importFile(),'小说已加入长卷。开始连续练习后，会按顺序翻译并接续。'));
 const observer=new IntersectionObserver(entries=>{if(activeView!=='reading')return;for(const entry of entries){if(entry.isIntersecting)loadMore(entry.target.id==='stream-top'?-1:1);}},{rootMargin:'600px 0px'});
 observer.observe($('stream-top'));observer.observe($('stream-bottom'));
@@ -415,11 +449,13 @@ async function switchView(view,options={}){
   if(viewBusy||busy)return false;
   viewBusy=true;
   try{
+    resetChapterFeedback();
     gamesUI?.pause();stopContinuous();explicitPause=true;renderControls();
     await flushSave();await gamesUI?.flush();
     if(view==='reading')await gamesUI?.close();
     activeView=view;
     $('reading-area').hidden=view!=='reading';$('games-view').hidden=view==='reading';
+    if(view==='reading')$('stream-toolbar').append(chapterNodes.panel);
     document.body.dataset.view=view;
     for(const name of ['reading','games','map'])$('nav-'+name).setAttribute('aria-current',name===view?'page':'false');
     $('view-title').textContent={reading:'阅读与练习',games:'打字游戏',map:'故事闯关'}[view];
@@ -430,11 +466,14 @@ async function switchView(view,options={}){
   }catch(error){notice(errorText(error),true);return false;}
   finally{viewBusy=false;renderControls();}
 }
-gamesUI=createGamesUI({root:$('games-view'),api,onRead:()=>switchView('reading'),onProgress:saved=>{
+gamesUI=createGamesUI({root:$('games-view'),api,onRead:()=>switchView('reading'),onContextChange:resetChapterFeedback,onReadingCompletion:({bookId,index,runId})=>{
+  const book=currentBook();return book?.id===bookId?captureChapterCompletion(book,index,runId):null;
+},onProgress:(saved,completion)=>{
   const book=state.books.find(item=>item.id===saved.bookId);if(!book)return;
   book.position=saved.position;book.draft=saved.draft;book.completed=saved.completed;book.stats=saved.stats;
   if(book.id===state.activeBookId){session=new TypingSession(book.segments[book.position].translation||'',book.draft||'');liveTotals={characters:0,seconds:0,attempts:0,errors:0};typingFeedback.reset();}
   readingChangedInGame=true;renderLibrary();renderOverview();
+  if(book.id===state.activeBookId&&completion?.status==='advanced')showChapterFeedback(chapterFeedback.confirm(completion.chapterReceipt,saved.completed));
 },onTranslation:({bookId,index,translation})=>{
   const book=state.books.find(item=>item.id===bookId);if(!book?.segments[index])return;
   book.segments[index].translation=translation;readingChangedInGame=true;
