@@ -1,11 +1,12 @@
 import { TypingSession, charactersMatch } from './typing.mjs';
 import { initialRange, extendRange, nextPosition } from './stream.mjs';
 import { setupAccount } from './account-ui.mjs';
-import { alignmentAtCursor, targetOffset } from './alignment.mjs';
+import { alignmentAtCursor } from './alignment.mjs';
 import { createGamesUI } from './games-ui.mjs';
 import { createTypingFeedback } from './typing-feedback.mjs';
 import { createChapterIndex } from './chapters.mjs';
 import { createChapterFeedback } from './chapter-feedback.mjs';
+import { createInlineTyping } from './inline-typing.mjs';
 const $=id=>document.getElementById(id);
 const api=window.novel;
 let gamesUI,activeView='reading',viewBusy=false;
@@ -19,6 +20,7 @@ let saveTimer,savePromise=null,saveFailure=false,movingInput=false,range={start:
 let liveTotals={characters:0,seconds:0,attempts:0,errors:0};
 const savePending=[];
 const rows=new Map();
+const inlineTyping=createInlineTyping({input:$('typing-input'),getCaret:()=>activeRow?.targetCache?.caretNode,getToolbar:()=>$('stream-toolbar')});
 const alignmentEntries=new Map();
 const currentBook=()=>state.books.find(book=>book.id===state.activeBookId);
 const currentSegment=()=>currentBook()?.segments[currentBook().position];
@@ -176,8 +178,9 @@ function renderControls(){
   $('typing-input').disabled=busy||!translated;
   $('typing-input').readOnly=Boolean(explicitPause||session?.complete);
   $('typing-panel').classList.toggle('is-paused',explicitPause);
-  $('typing-input').placeholder=!translated?'译文准备好后会在这里接着输入…':explicitPause?'已暂停，点击「继续」恢复练习。':'从第一个字符开始，一直打下去…';
-  $('input-status').textContent=finished?'已到故事结尾':!translated?(translationBookId===book?.id&&translationIndex===book?.position?'正在翻译这一小段…':'这一段还没有译文'):explicitPause?'已暂停':'正在输入 · 打完自动接续';
+  $('typing-input').placeholder='';
+  $('input-status').textContent=finished?'已到故事结尾':!translated?(translationBookId===book?.id&&translationIndex===book?.position?'正在翻译这一小段…':'这一段还没有译文'):explicitPause?'已暂停':'点击英文，直接输入 · 打完自动接续';
+  activeRow?.querySelector('.inline-typing-surface')?.classList.toggle('is-paused',explicitPause);
   $('reset').disabled=busy||!translated;$('edit-translation').disabled=busy||Boolean(translationTask&&translationBookId===book?.id&&translationIndex===book?.position);
   $('book-finished').hidden=!finished;
   $('session-note').textContent=explicitPause?'已暂停；不会再安排新翻译。':'打完自动接续；上下滚动不改变输入位置。';
@@ -198,30 +201,38 @@ function createParagraph(index){
   const practiceColumn=document.createElement('div');practiceColumn.className='passage-practice';
   const practiceLabel=document.createElement('p');practiceLabel.className='parallel-label';practiceLabel.textContent='英文练习';
   const english=document.createElement('p');english.className='stream-english';english.lang='en';
-  sourceColumn.append(sourceLabel,guide,source);practiceColumn.append(practiceLabel,english);parallel.append(sourceColumn,practiceColumn);row.append(heading,parallel);rows.set(index,row);updateParagraph(index);return row;
+  const surface=document.createElement('div');surface.className='inline-typing-surface';surface.append(english);
+  surface.addEventListener('mousedown',event=>{if(index===currentBook()?.position&&event.button===0&&event.target!==$('typing-input')){event.preventDefault();inlineTyping.focus();}});
+  sourceColumn.append(sourceLabel,guide,source);practiceColumn.append(practiceLabel,surface);parallel.append(sourceColumn,practiceColumn);row.append(heading,parallel);rows.set(index,row);updateParagraph(index);return row;
 }
 function updateParagraph(index){const row=rows.get(index),book=currentBook();if(!row||!book)return;const segment=book.segments[index],active=index===book.position;row.classList.toggle('is-complete',book.completed.includes(index));row.classList.toggle('is-active',active);row.querySelector('.paragraph-status').textContent=active?'当前输入':book.completed.includes(index)?'已练习':segment.translation?'译文已就绪':'待练习时翻译';row.querySelector('.practice-here').hidden=active;if(!active){row.querySelector('.stream-english').textContent=segment.translation||'开始练习后，将按顺序准备英文译文。';row.querySelector('.stream-english').classList.toggle('untranslated',!segment.translation);row.querySelector('.stream-source').textContent=segment.source;row.querySelector('.guide-status').hidden=true;row.guideRange='';row.targetCache=null;}}
 function renderTarget(){
   const book=currentBook(),row=rows.get(book?.position);if(!row)return;
-  const translation=currentSegment()?.translation||'',valueText=session?.value||'',selection=$('typing-input').selectionStart;
+  const input=$('typing-input'),translation=currentSegment()?.translation||'',valueText=session?.value||'',selection=input.selectionStart,selectionEnd=input.selectionEnd,selectionDirection=input.selectionDirection;
   const alignment=alignmentEntry(book,book.position).alignment,target=row.querySelector('.stream-english');
   let cache=row.targetCache;
   // A single key can dispatch input, keyup and select. Keep unchanged nodes and
   // skip repeated work without deferring the real input or caret update.
-  if(cache&&cache.translation===translation&&cache.value===valueText&&cache.selection===selection&&cache.alignment===alignment&&cache.complete===session?.complete)return;
+  if(cache&&cache.translation===translation&&cache.value===valueText&&cache.selection===selection&&cache.selectionEnd===selectionEnd&&cache.selectionDirection===selectionDirection&&cache.alignment===alignment&&cache.complete===session?.complete)return;
   if(!cache||cache.translation!==translation){
     const characters=Array.from(translation),nodes=[],offsets=[],fragment=document.createDocumentFragment();let offset=0;
     for(const character of characters){const node=document.createElement('span');node.className='target-char';node.textContent=character;nodes.push(node);offsets.push(offset);offset+=character.length;fragment.append(node);}
     target.replaceChildren(fragment);if(!characters.length)target.textContent='这一段的英文译文还在等待准备。';
     target.classList.toggle('untranslated',!characters.length);
-    cache=row.targetCache={translation,characters,nodes,offsets,classes:[],extra:null};
+    const end=document.createElement('span');end.className='inline-end';end.setAttribute('aria-hidden','true');if(characters.length)target.append(end);
+    cache=row.targetCache={translation,characters,nodes,offsets,classes:[],typed:[],extra:null,end};
   }
-  const hit=renderSourceGuide(),value=Array.from(valueText),cursor=targetOffset(translation,valueText,selection);
+  const hit=renderSourceGuide(),value=Array.from(valueText),cursorSelection=selectionDirection==='backward'?selection:selectionEnd,cursorCount=Array.from(valueText.slice(0,cursorSelection)).length;
+  const selectedStart=Array.from(valueText.slice(0,selection)).length,selectedEnd=Array.from(valueText.slice(0,selectionEnd)).length;
+  cache.caretNode=translation?cache.end:null;
   let mismatchCount=0,firstMismatch=-1;
   for(let index=0;index<cache.characters.length;index++){
     const character=cache.characters[index],offset=cache.offsets[index];let className='target-char';
     if(index<value.length){const matches=charactersMatch(value[index],character);className+=matches?' correct':' wrong';if(!matches){mismatchCount++;if(firstMismatch<0)firstMismatch=index;}}
-    if(offset===cursor&&!session?.complete)className+=' caret';
+    const wrongInput=index<value.length&&!charactersMatch(value[index],character)?value[index]:undefined;
+    if(cache.typed[index]!==wrongInput){if(wrongInput!==undefined){cache.nodes[index].dataset.typed=wrongInput;cache.nodes[index].title=`已输入 ${JSON.stringify(wrongInput)}，应为 ${JSON.stringify(character)}`;}else{delete cache.nodes[index].dataset.typed;cache.nodes[index].removeAttribute('title');}cache.typed[index]=wrongInput;}
+    if(index===cursorCount&&!session?.complete){className+=' caret';cache.caretNode=cache.nodes[index];}
+    if(index>=selectedStart&&index<selectedEnd)className+=' selected';
     if(character===' ')className+=' space';
     if(character==='\n')className+=' newline';
     if(character==='\t')className+=' tab';
@@ -230,9 +241,16 @@ function renderTarget(){
   }
   const overflow=value.slice(cache.characters.length).join('');
   if(overflow){mismatchCount+=value.length-cache.characters.length;if(firstMismatch<0)firstMismatch=cache.characters.length;}
-  if(overflow){if(!cache.extra){cache.extra=document.createElement('span');cache.extra.className='target-char wrong';target.append(cache.extra);}setText(cache.extra,overflow);}
-  else if(cache.extra){cache.extra.remove();cache.extra=null;}
-  Object.assign(cache,{value:valueText,selection,alignment,complete:session?.complete});
+  if(overflow){
+    if(!cache.extra){cache.extra=document.createElement('span');cache.extra.className='typing-overflow';target.insertBefore(cache.extra,cache.end);}
+    if(cache.overflow!==overflow){cache.extra.replaceChildren(...Array.from(overflow,character=>{const node=document.createElement('span');node.className='target-char wrong';node.textContent=character;return node;}));cache.overflow=overflow;}
+    for(const [extraIndex,node]of Array.from(cache.extra.children).entries()){const index=cache.characters.length+extraIndex;node.classList.toggle('caret',index===cursorCount&&!session?.complete);node.classList.toggle('selected',index>=selectedStart&&index<selectedEnd);if(index===cursorCount)cache.caretNode=node;}
+  }
+  else if(cache.extra){cache.extra.remove();cache.extra=null;cache.overflow='';}
+  const endCaret=cursorCount>=Math.max(cache.characters.length,value.length)&&!session?.complete;
+  cache.end.classList.toggle('caret',endCaret);if(endCaret)cache.caretNode=cache.end;
+  Object.assign(cache,{value:valueText,selection,selectionEnd,selectionDirection,alignment,complete:session?.complete});
+  inlineTyping.schedule();
   setText($('character-count'),`${value.length} / ${cache.characters.length}`);
   $('typing-correction').hidden=mismatchCount===0;
   if(firstMismatch>=0){
@@ -253,20 +271,20 @@ function loadMore(direction){
 }
 function renderSentinels(){$('stream-top').textContent=range.start>0?'向上滚动，继续阅读前文':'故事从这里开始';$('stream-bottom').textContent=range.end<(currentBook()?.segments.length||0)?'向下滚动，故事继续':'已到故事末尾';}
 function ensureRow(index){while(index>=range.end)loadMore(1);while(index<range.start)loadMore(-1);}
-function revealInput(focus=true){const row=rows.get(currentBook()?.position);if(!row)return;row.scrollIntoView({block:'start',behavior:'auto'});if(focus&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});}
+function revealInput(focus=true){if(focus)inlineTyping.focus(true);else inlineTyping.schedule(true);}
 function mountActive({focus=false,scroll=false}={}){
   const book=currentBook();if(!book)return;ensureRow(book.position);movingInput=true;
   if(activeRow){for(const selector of ['.stream-source','.stream-english','.guide-status'])activeRow.querySelector(selector).removeAttribute('id');updateParagraph(Number(activeRow.dataset.index));}
   updateParagraph(book.position);activeRow=rows.get(book.position);
   observeActiveSource(activeRow.querySelector('.passage-source'));
-  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.querySelector('.guide-status').id='guide-status';row.querySelector('.passage-practice').append($('typing-panel'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
+  const row=rows.get(book.position);row.querySelector('.stream-source').id='source-text';row.querySelector('.stream-english').id='translation-text';row.querySelector('.guide-status').id='guide-status';row.querySelector('.passage-practice').append($('typing-panel'));row.querySelector('.inline-typing-surface').append($('typing-input'));inlineTyping.attach(row.querySelector('.inline-typing-surface'),row.querySelector('.stream-english'));$('typing-input').value=session?.value||'';$('typing-input').setSelectionRange($('typing-input').value.length,$('typing-input').value.length);renderTarget();renderOverview();renderControls();renderMetrics();movingInput=false;
   if(scroll)revealInput(focus);else if(focus&&!$('typing-input').disabled)$('typing-input').focus({preventScroll:true});
   void readAlignmentWindow(book).then(()=>{if(currentBook()?.id===book.id)renderTarget();}).catch(()=>{if(currentBook()?.id===book.id)notice('中文对照缓存暂时无法读取，可以继续打字；点击开始练习可重试。',true);});
 }
 function renderPassage(){
   observeActiveSource(null);
   resetChapterFeedback();$('stream-toolbar').append(chapterNodes.panel);
-  stopContinuous();typingFeedback.reset();explicitPause=false;const book=currentBook();$('reading-view').hidden=!book;$('empty-state').hidden=Boolean(book);movingInput=true;$('input-parking').append($('typing-panel'));rows.clear();activeRow=null;$('story-stream').replaceChildren();movingInput=false;liveTotals={characters:0,seconds:0,attempts:0,errors:0};
+  stopContinuous();typingFeedback.reset();explicitPause=false;const book=currentBook();$('reading-view').hidden=!book;$('empty-state').hidden=Boolean(book);movingInput=true;$('typing-panel').append($('typing-input'));$('input-parking').append($('typing-panel'));rows.clear();activeRow=null;inlineTyping.attach(null,null);$('story-stream').replaceChildren();movingInput=false;liveTotals={characters:0,seconds:0,attempts:0,errors:0};
   if(!book){session=null;renderControls();return;}
   range=initialRange(book.segments.length,book.position);for(let i=range.start;i<range.end;i++)$('story-stream').append(createParagraph(i));session=new TypingSession(currentSegment().translation||'',book.draft||'');renderSentinels();mountActive({scroll:book.position>0});
 }
@@ -320,26 +338,30 @@ function lockImportDialog(id,locked){for(const control of $(id).querySelectorAll
 function openSettings(message=''){pauseForDialog();$('provider').value=state.settings.provider||'glm';$('base-url').value=state.settings.baseUrl||presets.glm.baseUrl;$('model').value=state.settings.model||presets.glm.model;$('api-key').value='';$('clear-key').checked=false;updateKeyHelp();formMessage('settings-message',message);$('settings-dialog').showModal();}
 function updateKeyHelp(){if(state.account?.connected){$("key-status").textContent=state.settings.hasKey?"（服务器已保存，留空保留）":"（服务器尚未设置）";$("api-key").placeholder="留空保留服务器上的 Key";$("key-help").textContent="API Key 加密保存在你的服务器，同一账号的其他电脑自动共用。更换接口需重新填写 Key。";return;}const changed=$('provider').value!==state.settings.provider;$('key-status').textContent=state.settings.hasKey&&!changed?'（已保存，留空保留）':'（尚未设置）';$('api-key').placeholder=state.settings.hasKey&&!changed?'留空保留已保存的 Key':'输入此服务商的 API Key';$('key-help').textContent=$('provider').value==='glm'?'使用智谱「标准 API Key」，Coding Plan 套餐 Key 不通用。API Key 仅在本机加密保存。':'密钥由 Windows 加密保存在本机，不包含在导出备份中。更换服务商时需重新输入。';}
 $('typing-input').addEventListener('input',event=>{
+  if(event.isComposing)return;
   if(!session||busy||explicitPause||session.complete)return;
   if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||'')){$('typing-input').value=session.value;return;}
   const before=session.value,errorsBefore=session.errors;
   session.resume(now());session.input($('typing-input').value,now());currentBook().draft=session.value;renderTarget();renderMetrics();
+  inlineTyping.schedule(true);
   typingFeedback.input({before,value:session.value,target:session.target,complete:session.complete,error:session.errors>errorsBefore,nodes:rows.get(currentBook().position)?.targetCache?.nodes});
   if(session.complete){if(advanceCompleted())return;const book=currentBook(),completion=session.claimCompletion(now());queueSave({...progressSnapshot(),...(!book.completed.includes(book.position)?{completed:book.position,...(completion?{session:completion}:{})}:{})},completion);if(!book.completed.includes(book.position))book.completed.push(book.position);renderLibrary();renderOverview();renderControls();}else scheduleSave();
 });
-for(const name of ['select','keyup','click'])$('typing-input').addEventListener(name,()=>{if(!movingInput&&session)renderTarget();});
+for(const name of ['select','keyup','click'])$('typing-input').addEventListener(name,event=>{if(!movingInput&&session){renderTarget();if(name==='keyup'&&/^(Arrow|Home|End)/.test(event.key))inlineTyping.schedule(true);}});
 for(const name of ['paste','drop'])$('typing-input').addEventListener(name,event=>{event.preventDefault();notice('练习区只接受逐字键盘输入。自己的译文可粘贴到「编辑本段译文」。');});
 $('typing-input').addEventListener('beforeinput',event=>{if(/insertFromPaste|insertFromDrop|insertReplacementText/.test(event.inputType||''))event.preventDefault();});
 $('typing-input').addEventListener('keydown',event=>{
-  if(event.key==='Enter'&&!session?.target.includes('\n'))event.preventDefault();
+  if(inlineTyping.navigate(event,activeRow?.targetCache)){renderTarget();return;}
+  if(event.key==='Enter'&&!event.isComposing&&!session?.target.includes('\n'))event.preventDefault();
   if(event.key==='Tab'&&session?.target.includes('\t')&&!event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&!event.isComposing&&!busy&&!explicitPause&&!session.complete){
     event.preventDefault();const input=$('typing-input');input.setRangeText('\t',input.selectionStart,input.selectionEnd,'end');input.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:'\t',bubbles:true}));
   }
 });
+$('typing-input').addEventListener('compositionend',()=>{queueMicrotask(()=>{if(session&&$('typing-input').value!==session.value)$('typing-input').dispatchEvent(new InputEvent('input',{inputType:'insertFromComposition',bubbles:true}));});});
 $('first-error').addEventListener('click',()=>{
   const input=$('typing-input');if(input.disabled||input.readOnly||$('typing-correction').hidden)return;
   const offset=Number($('first-error').dataset.offset),length=Number($('first-error').dataset.length);
-  input.focus({preventScroll:true});input.setSelectionRange(offset,offset+length);renderTarget();
+  input.focus({preventScroll:true});input.setSelectionRange(offset,offset+length);renderTarget();inlineTyping.schedule(true);
 });
 $('typing-input').addEventListener('focus',()=>{if(!movingInput&&!explicitPause)session?.resume(now());});
 $('typing-input').addEventListener('blur',()=>{if(!movingInput){session?.pause(now());if(session?.hasStarted)scheduleSave();}});

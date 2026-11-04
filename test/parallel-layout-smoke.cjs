@@ -35,7 +35,7 @@ async function durable(expected){
  page=await app.firstWindow();page.on('pageerror',error=>report.errors.push(error.message));await page.locator('.story-passage.is-active').waitFor();
  await check('desktop puts Chinese left and target plus input right without horizontal overflow',async()=>{
   await resize(1440,1000);const g=await geometry();report.geometry.push({stage:'desktop',...g});
-  assert.ok(g.source.right<g.english.x,'Chinese should be left of English');assert.ok(Math.abs(g.input.x-g.english.x)<2);assert.ok(g.input.y>g.english.bottom);assert.equal(g.overflow,false);
+  assert.ok(g.source.right<g.english.x,'Chinese should be left of English');assert.ok(g.input.x>=g.english.x-2&&g.input.right<=g.english.right+3);assert.ok(g.input.y>=g.english.y-2&&g.input.y<g.english.bottom,'Input focus proxy belongs on the English passage');assert.equal(g.overflow,false);
   assert.equal(await page.locator('.story-passage.is-active .passage-practice #typing-input').count(),1);
   await page.screenshot({path:path.join(evidence,'parallel-reading-desktop.png')});
  });

@@ -29,12 +29,12 @@ async function assertNavigation(stage){
 async function clickVisibleNav(id,stage){const sample=await assertNavigation(stage),item=sample.nav.find(node=>node.id===id);await page.mouse.click(item.point.x,item.point.y);await page.waitForFunction(id=>document.getElementById(id).getAttribute('aria-current')==='page',id);}
 async function assertReadingTarget(stage){
  const geometry=await page.evaluate(()=>{
-  const toolbar=document.querySelector('.stream-toolbar').getBoundingClientRect(),heading=document.querySelector('.story-passage.is-active .story-passage-heading').getBoundingClientRect(),input=document.getElementById('typing-input').getBoundingClientRect();
+  const toolbar=document.querySelector('.stream-toolbar').getBoundingClientRect(),caret=document.querySelector('#translation-text .caret').getBoundingClientRect(),input=document.getElementById('typing-input').getBoundingClientRect();
   const controls=['open-settings','export-backup','import-backup','open-folder'].map(id=>{const node=document.getElementById(id),r=node.getBoundingClientRect(),hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);return {id,inViewport:r.top>=0&&r.bottom<=innerHeight,hit:!!hit&&(hit===node||node.contains(hit))};});
-  return {toolbarBottom:toolbar.bottom,headingTop:heading.top,inputTop:input.top,inputBottom:input.bottom,viewportHeight:innerHeight,controls};
+  return {toolbarBottom:toolbar.bottom,caretTop:caret.top,caretBottom:caret.bottom,inputTop:input.top,inputBottom:input.bottom,viewportHeight:innerHeight,controls};
  });
  report.geometry.push({stage,...geometry});
- assert.ok(geometry.headingTop>=geometry.toolbarBottom-1,`${stage}: active paragraph heading is hidden behind sticky controls`);
+ assert.ok(geometry.caretTop>=geometry.toolbarBottom-1&&geometry.caretBottom<=geometry.viewportHeight,`${stage}: active English caret is hidden behind sticky controls`);
  assert.ok(geometry.inputTop>=geometry.toolbarBottom-1&&geometry.inputBottom<=geometry.viewportHeight,`${stage}: current input is obscured or outside the viewport`);
  for(const control of geometry.controls){assert.equal(control.inViewport,true,`${stage}: sidebar ${control.id} is below the window`);assert.equal(control.hit,true,`${stage}: sidebar ${control.id} is obscured`);}
 }
