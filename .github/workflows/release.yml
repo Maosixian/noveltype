@@ -61,6 +61,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Packaged parallel layout regression failed' }
           node test/inline-typing-smoke.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Packaged inline typing regression failed' }
+          node test/centered-typing-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged centered typing regression failed' }
       - name: Install and verify on the disposable Windows runner
         shell: pwsh
         run: |
