@@ -266,7 +266,7 @@ function loadMore(direction){
   const anchor=direction<0?$('story-stream').firstElementChild:null;const top=anchor?.getBoundingClientRect().top;const fragment=document.createDocumentFragment();
   if(direction<0){for(let i=next.start;i<range.start;i++)fragment.append(createParagraph(i));$('story-stream').prepend(fragment);}else{for(let i=range.end;i<next.end;i++)fragment.append(createParagraph(i));$('story-stream').append(fragment);}
   range=next;
-  if(anchor)window.scrollBy(0,anchor.getBoundingClientRect().top-top);
+  if(anchor)inlineTyping.preserveScroll(anchor.getBoundingClientRect().top-top);
   renderSentinels();
 }
 function renderSentinels(){$('stream-top').textContent=range.start>0?'向上滚动，继续阅读前文':'故事从这里开始';$('stream-bottom').textContent=range.end<(currentBook()?.segments.length||0)?'向下滚动，故事继续':'已到故事末尾';}
