@@ -1,7 +1,7 @@
 {
   "name": "noveltype",
   "productName": "NovelType",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Read stories. Type English. A private desktop novel typing tutor.",
   "main": "app/main.cjs",
   "author": "Xavier",

@@ -4,38 +4,36 @@ export function charactersMatch(actual, expected) {
     && actual.toLowerCase() === expected.toLowerCase();
 }
 
-function textMatches(actual, expected) {
-  const value = Array.from(actual);
-  const target = Array.from(expected);
-  return target.length > 0 && value.length === target.length
-    && value.every((character, index) => charactersMatch(character, target[index]));
-}
-
 /** Pure typing state. Clock values are monotonic milliseconds supplied by the caller. */
 export class TypingSession {
+  #expected;
+  #characters;
+  #correct;
+
   constructor(target, draft = '') {
     this.target = String(target);
     this.value = String(draft);
+    this.#expected = Array.from(this.target);
+    this.#characters = Array.from(this.value);
+    this.#correct = this.#characters.reduce((count, character, index) => count + Number(charactersMatch(character, this.#expected[index])), 0);
     this.attempts = 0;
     this.errors = 0;
     this.elapsed = 0;
     this.startedAt = null;
     this.hasStarted = false;
-    this.complete = textMatches(this.value, this.target);
+    this.complete = this.#expected.length > 0 && this.#characters.length === this.#expected.length && this.#correct === this.#expected.length;
     this.claimed = this.complete;
     this.baseline = this.correctCount();
   }
 
   correctCount() {
-    const expected = Array.from(this.target);
-    return Array.from(this.value).filter((character, i) => charactersMatch(character, expected[i])).length;
+    return this.#correct;
   }
 
   input(value, now) {
     if (this.complete) return;
-    const next = Array.from(String(value));
-    const previous = Array.from(this.value);
-    const expected = Array.from(this.target);
+    const nextValue = String(value), next = Array.from(nextValue);
+    const previous = this.#characters, expected = this.#expected;
     let prefix = 0;
     while (prefix < Math.min(previous.length, next.length) && previous[prefix] === next[prefix]) prefix++;
     let suffix = 0;
@@ -49,8 +47,16 @@ export class TypingSession {
       this.attempts++;
       if (!charactersMatch(next[i], expected[i])) this.errors++;
     }
-    this.value = next.join('');
-    this.complete = textMatches(this.value, this.target);
+    // Equal-length edits preserve the common suffix's target positions. An
+    // insertion/deletion shifts that suffix, so recount the entire changed tail.
+    const shifted = previous.length !== next.length;
+    const oldEnd = shifted ? previous.length : previous.length - suffix;
+    const newEnd = shifted ? next.length : end;
+    for (let i = prefix; i < oldEnd; i++) this.#correct -= Number(charactersMatch(previous[i], expected[i]));
+    for (let i = prefix; i < newEnd; i++) this.#correct += Number(charactersMatch(next[i], expected[i]));
+    this.#characters = next;
+    this.value = nextValue;
+    this.complete = expected.length > 0 && next.length === expected.length && this.#correct === expected.length;
     if (this.complete) this.pause(now);
   }
 

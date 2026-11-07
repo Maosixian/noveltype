@@ -17,14 +17,22 @@ class CloudWorkspace{
  open(){
   const dir=this.directory();this.library=new Library(dir);this.games=new GameStore(dir);const disk=new AlignmentCache(dir);
   this.cache={get:(s,t)=>disk.get(s,t)||getDemoAlignment(s,t),set:(...args)=>disk.set(...args)};
-  this.settingsFile=path.join(dir,'server-settings.json');this.settings=fs.existsSync(this.settingsFile)?JSON.parse(fs.readFileSync(this.settingsFile,'utf8')):{provider:'glm',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-5.3',hasKey:false};
+  this.settingsFile=path.join(dir,'server-settings.json');const settingsSaved=fs.existsSync(this.settingsFile);
+  this.settings=settingsSaved?JSON.parse(fs.readFileSync(this.settingsFile,'utf8')):{provider:'glm',baseUrl:'https://open.bigmodel.cn/api/paas/v4',model:'glm-5.3',hasKey:false};
+  this.persistedSettings=settingsSaved?JSON.stringify(this.settings):null;
   // This index belongs to the opened Library, not the remote staging cache.
   // Load it once per account so draft saves never parse the whole sync history.
   const appliedFile=path.join(dir,'cloud-applied.json');
   this.appliedRevisions=fs.existsSync(appliedFile)?JSON.parse(fs.readFileSync(appliedFile,'utf8')):{};
   this.onSwitch(this.library,this.games,this.cache);this.recoverDirty();
  }
- savePublic(settings){const next={provider:settings.provider,baseUrl:settings.baseUrl,model:settings.model,hasKey:!!settings.hasKey};save(this.settingsFile,next);this.settings=next;return this.settings;}
+ savePublic(settings){
+  const next={provider:settings.provider,baseUrl:settings.baseUrl,model:settings.model,hasKey:!!settings.hasKey},serialized=JSON.stringify(next);
+  // Track the last successful commit, not the mutable public settings object.
+  // Polling unchanged settings needs no disk write, but a missing file still does.
+  if(serialized!==this.persistedSettings||!fs.existsSync(this.settingsFile)){save(this.settingsFile,next);this.persistedSettings=serialized;}
+  this.settings=next;return this.settings;
+ }
  dirtyFile(){return path.join(this.directory(),'cloud-dirty.json');}
  appliedFile(){return path.join(this.directory(),'cloud-applied.json');}
  applied(){return this.appliedRevisions;}
@@ -46,8 +54,8 @@ class CloudWorkspace{
  async sync({apply=false}={}){
   if(!this.connected())return this.status();if(this.syncing)return this.syncing;
   this.syncing=(async()=>{
-   this.recoverDirty();let response,turns=0;const changed=new Map();
-   do{response=await this.client.sync(async incoming=>{if(incoming.accepted.length){const applied={...this.applied()};for(const e of incoming.accepted)applied[`${e.kind}/${e.key}`]=Math.max(applied[`${e.kind}/${e.key}`]||0,e.revision);this.saveApplied(applied);}});for(const item of response.changes)changed.set(`${item.kind}/${item.key}`,item);if(++turns>3000)throw new Error('本轮同步内容较多，请再次同步。');}while(response.hasMore||this.client.outbox().some(op=>!op.dependsOn));
+   this.recoverDirty();let response,turns=0;
+   do{response=await this.client.sync(async incoming=>{if(incoming.accepted.length){const applied={...this.applied()};for(const e of incoming.accepted)applied[`${e.kind}/${e.key}`]=Math.max(applied[`${e.kind}/${e.key}`]||0,e.revision);this.saveApplied(applied);}});if(++turns>3000)throw new Error('本轮同步内容较多，请再次同步。');}while(response.hasMore||this.client.outbox().some(op=>!op.dependsOn));
    if(apply&&this.client.conflicts().length===0){
     const entities=this.client.entities(),books=entities.filter(e=>e.kind==='book');
     const newBook=books.some(e=>!this.library.state.books.some(b=>b.id===e.key));
